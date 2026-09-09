@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# secrets — API keys live here, never commit
+.env
+.env.local
+# .env.example can hold live keys on a dev machine; the template lives in README.md
+.env.example
+.env.*.local
+
+# your data: enhancements, scenarios, documents and their screenshots
+server/data/
+server/uploads/
+
+# noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+Untitled-*.txt

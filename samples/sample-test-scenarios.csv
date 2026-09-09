@@ -1,0 +1,6 @@
+S.No,Test Scenario,Expected Result,Priority
+1,Verify a single 1:1 chat migrates with full history,All messages present in order,High
+2,"Verify group chat with 500 members, including attachments",Members and attachments intact,High
+3,Verify emoji reactions are preserved after migration,Reactions match source,Medium
+4,Verify deleted messages are not migrated,Deleted messages absent,Medium
+5,Verify message timestamps stay in the source timezone,Timestamps unchanged,Low

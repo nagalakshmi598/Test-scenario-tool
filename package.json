@@ -1,0 +1,19 @@
+{
+  "name": "qa-test-scenario-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QA test scenario manager for product enhancements (Message / Email / Content)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
+    "express": "^4.19.2",
+    "mammoth": "^1.12.2",
+    "multer": "^2.3.0",
+    "openai": "^7.12.1",
+    "xlsx": "^0.18.5"
+  }
+}

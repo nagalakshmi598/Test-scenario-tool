@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QA Test Scenario Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark">QA</span>
+        <span>
+          <strong>Test Scenario Tool</strong>
+          <small>Product Engineering &middot; enhancement testing</small>
+        </span>
+      </div>
+      <button id="newEnhancementBtn" class="btn btn-light">+ New Enhancement</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Products -->
+    <aside class="panel products">
+      <h2 class="panel-title">Products</h2>
+      <ul id="productList" class="product-list"></ul>
+
+    </aside>
+
+    <!-- Enhancements / scenarios -->
+    <section class="panel content">
+      <nav class="crumbs" id="crumbs"></nav>
+
+      <!-- View 1: enhancement list of the selected product -->
+      <div id="enhancementView">
+        <div class="view-head">
+          <div>
+            <h2 class="view-title" id="productTitle">Select a product</h2>
+            <p class="view-sub" id="productSub">Choose Message, Email or Content to see its enhancements.</p>
+          </div>
+          <div class="view-actions">
+            <input type="search" id="enhancementSearch" class="input" placeholder="Search enhancements" hidden />
+            <button id="addForProductBtn" class="btn btn-primary" hidden>+ Add enhancement</button>
+          </div>
+        </div>
+        <div id="enhancementList" class="enhancement-list"></div>
+      </div>
+
+      <!-- View 2: test scenarios of the selected enhancement -->
+      <div id="scenarioView" hidden>
+        <div class="view-head">
+          <div>
+            <h2 class="view-title titled">
+              <span id="enhancementTitle"></span>
+              <button type="button" id="renameEnhancementBtn" class="edit-btn" title="Edit this name">Edit</button>
+            </h2>
+            <form id="renameForm" class="rename-row" hidden>
+              <input type="text" id="renameInput" class="input" maxlength="140" autocomplete="off" />
+              <button type="submit" class="btn btn-primary rename-btn">Save</button>
+              <button type="button" id="renameCancel" class="btn btn-outline rename-btn">Cancel</button>
+            </form>
+            <p class="view-sub" id="enhancementSub"></p>
+          </div>
+          <div class="view-actions">
+            <input type="search" id="scenarioSearch" class="input" placeholder="Search test scenarios" />
+            <button id="docLinkBtn" class="btn btn-outline" hidden>View document</button>
+            <button id="reuploadBtn" class="btn btn-outline">Upload / Add CSV</button>
+            <a id="exportBtn" class="btn btn-outline" download>Export CSV</a>
+            <button id="deleteBtn" class="btn btn-danger">Delete</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="scenario-table">
+            <thead id="scenarioHead"></thead>
+            <tbody id="scenarioBody"></tbody>
+          </table>
+        </div>
+        <p class="table-foot" id="scenarioFoot"></p>
+
+        <!-- Optional: add one scenario directly in the tool (CSV upload above still works as before) -->
+        <form id="addScenarioForm" class="add-box">
+          <p class="add-box-title">Add a test scenario in the tool <em>(optional)</em></p>
+          <div class="add-box-row">
+            <input type="text" id="addScenarioText" class="input" maxlength="2000"
+                   placeholder="Type the test scenario, e.g. Verify that the Group DM count refreshes after delete" autocomplete="off" />
+            <div id="addScenarioExtras" class="add-box-extras"></div>
+            <button type="submit" id="addScenarioBtn" class="btn btn-primary">+ Add scenario</button>
+          </div>
+          <p class="add-box-hint">It is appended as the next row with the next serial number. Uploading a CSV is unchanged.</p>
+        </form>
+      </div>
+
+      <!-- View 3: stored enhancement documents -->
+      <div id="documentsView" hidden>
+        <div class="view-head">
+          <div>
+            <h2 class="view-title">Enhancement Documents</h2>
+            <p class="view-sub">Every enhancement and customization write-up — the matter and its screenshots.</p>
+          </div>
+          <div class="view-actions">
+            <input type="search" id="documentSearch" class="input" placeholder="Search documents" />
+            <button id="addDocumentBtn" class="btn btn-primary">+ Upload document</button>
+          </div>
+        </div>
+        <div id="docTabs" class="tabs" role="tablist"></div>
+        <div id="documentList" class="enhancement-list"></div>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- Upload dialog -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <h3 id="modalTitle">New enhancement</h3>
+        <button id="modalClose" class="icon-btn" aria-label="Close">&times;</button>
+      </div>
+      <form id="uploadForm" class="modal-body">
+        <label class="field" id="productField">
+          <span>Product</span>
+          <select name="product" id="modalProduct" class="input"></select>
+        </label>
+        <label class="field" id="nameField">
+          <span id="nameFieldLabel">Enhancement / feature name</span>
+          <input name="name" id="modalName" class="input" placeholder="e.g. Group chat reactions v2" autocomplete="off" />
+        </label>
+        <label class="field" id="descField">
+          <span>Notes <em>(optional)</em></span>
+          <input name="description" id="modalDesc" class="input" placeholder="Sprint, ticket id, build number" autocomplete="off" />
+        </label>
+        <label class="field" id="modeField" hidden>
+          <span>Existing scenarios</span>
+          <select name="mode" id="modalMode" class="input">
+            <option value="replace">Replace with this file</option>
+            <option value="append">Keep them and append this file</option>
+          </select>
+        </label>
+        <label class="field" id="fileField">
+          <span id="fileFieldLabel">Test scenarios file <em>(optional — .csv, .xlsx, .xls)</em></span>
+          <input type="file" name="file" id="modalFile" class="input file" accept=".csv,.xlsx,.xls,.xlsm,.txt" />
+        </label>
+        <label class="field" id="docField">
+          <span id="docFieldLabel">Enhancement document <em>(optional — .docx, .pdf, .md, .txt, image)</em></span>
+          <input type="file" name="document" id="modalDoc" class="input file"
+                 accept=".docx,.pdf,.md,.txt,.png,.jpg,.jpeg,.gif,.webp,.bmp" />
+        </label>
+        <label class="check" id="splitField">
+          <input type="checkbox" name="splitLines" id="modalSplit" checked />
+          <span>Split multi-line cells into separate scenario rows</span>
+        </label>
+        <p class="hint" id="modalHint">
+          Expected columns: <strong>S.No</strong> and <strong>Test Scenario</strong>. Extra columns such as
+          Priority or Expected Result are kept and shown too. Serial numbers are re-generated so every
+          scenario sits on its own numbered row.
+        </p>
+        <p class="form-error" id="modalError" hidden></p>
+        <div class="modal-foot">
+          <button type="button" id="modalCancel" class="btn btn-outline">Cancel</button>
+          <button type="submit" id="modalSubmit" class="btn btn-primary">Upload scenarios</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Yes / No confirm for deleting one test scenario -->
+  <div id="confirmModal" class="modal" hidden>
+    <div class="modal-card confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div class="modal-head">
+        <h3 id="confirmTitle">Delete test scenario</h3>
+        <button id="confirmClose" class="icon-btn" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-text" id="confirmText"></p>
+        <p class="confirm-quote" id="confirmQuote"></p>
+        <div class="modal-foot">
+          <button type="button" id="confirmNo" class="btn btn-outline">No, cancel</button>
+          <button type="button" id="confirmYes" class="btn btn-solid-danger">Yes, delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
