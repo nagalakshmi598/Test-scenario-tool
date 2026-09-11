@@ -84,6 +84,19 @@ app.use(express.static(path.join(__dirname, '..', 'public'), {
 const wrap = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const truthy = (value) => value === undefined || value === 'true' || value === true || value === 'on';
 
+/**
+ * Multipart field values arrive latin1-decoded, so a file name with an en dash
+ * or an accent shows up as mojibake ("Slack â€“ chat.docx"). Re-read those bytes
+ * as UTF-8 when that produces a clean string.
+ */
+function decodeFileName(name) {
+  const raw = String(name || '');
+  if (!/[À-ÿ]/.test(raw)) return raw;
+
+  const utf8 = Buffer.from(raw, 'latin1').toString('utf8');
+  return utf8.includes('�') ? raw : utf8;
+}
+
 function keepOriginal(id, file) {
   const ext = path.extname(file.originalname).toLowerCase();
   const stored = `${id}-${Date.now()}${ext}`;
@@ -137,7 +150,7 @@ app.post('/api/enhancements', enhancementUpload, wrap(async (req, res) => {
     product,
     name,
     description,
-    sourceFile: sheet ? sheet.originalname : '',
+    sourceFile: sheet ? decodeFileName(sheet.originalname) : '',
     scenarios,
     extraColumns,
   });
@@ -183,7 +196,7 @@ app.post('/api/enhancements/:id/scenarios', upload.single('file'), wrap((req, re
   const updated = store.setScenarios(enhancement.id, {
     scenarios,
     extraColumns,
-    sourceFile: req.file.originalname,
+    sourceFile: decodeFileName(req.file.originalname),
     mode,
   });
   keepOriginal(enhancement.id, req.file);
@@ -243,7 +256,8 @@ app.post('/api/enhancements/:id/scenarios/:sno/testcases', wrap(async (req, res)
 
 async function storeDocument({ name, description, product, enhancementId, file }) {
   const id = crypto.randomUUID();
-  const ingested = await ingestDocument({ id, buffer: file.buffer, originalName: file.originalname });
+  const fileName = decodeFileName(file.originalname);
+  const ingested = await ingestDocument({ id, buffer: file.buffer, originalName: fileName });
 
   return store.createDocument({
     id,
@@ -251,7 +265,7 @@ async function storeDocument({ name, description, product, enhancementId, file }
     description: (description || '').trim(),
     product: product || '',
     enhancementId: enhancementId || '',
-    fileName: file.originalname,
+    fileName,
     ...ingested,
   });
 }
@@ -265,7 +279,8 @@ app.post('/api/documents', uploadDocument.single('file'), wrap(async (req, res) 
   if (!req.file) return res.status(400).json({ error: 'Attach the document file.' });
 
   // No name typed? Use the file name — the document is the point, not the label.
-  const name = (req.body.name || '').trim() || path.basename(req.file.originalname, path.extname(req.file.originalname));
+  const readable = decodeFileName(req.file.originalname);
+  const name = (req.body.name || '').trim() || path.basename(readable, path.extname(readable));
 
   const doc = await storeDocument({ name, description, product, enhancementId, file: req.file });
   res.status(201).json({ document: store.documentSummary(doc) });
