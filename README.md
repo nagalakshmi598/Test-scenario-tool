@@ -42,6 +42,9 @@ Dashboard
   (Test Case / Test Scenario / Preconditions / Test Steps / Expected Result), written by OpenAI or Claude
   from that scenario. Cached after the first run; **Regenerate** writes a fresh set. Needs an API
   key — see below.
+- **Pass / Fail** beside every scenario — mark the result as you test; the row tints green or
+  red, the footer keeps a running `x passed · y failed · z not run`, and clicking the active
+  button clears it back to not run. The status is included in the CSV export.
 - **Export CSV** — download the stored scenarios back as a clean CSV.
 - **Enhancement document** — attach the write-up while creating an enhancement, or upload one from
   **Enhancement Documents** in the left panel. Word files are shown inside the tool with their
@@ -119,6 +122,7 @@ See [samples/sample-test-scenarios.csv](samples/sample-test-scenarios.csv) for t
 | GET | `/api/enhancements/:id` | One enhancement with all scenarios |
 | POST | `/api/enhancements/:id/scenarios` | Re-upload scenarios (`mode=replace\|append`) |
 | POST | `/api/enhancements/:id/scenario` | Add one scenario typed in the tool (JSON: `scenario`, `extra`) |
+| PATCH | `/api/enhancements/:id/scenarios/:sno/status` | Mark a scenario pass / fail (empty clears it) |
 | DELETE | `/api/enhancements/:id/scenarios/:sno` | Delete one scenario row, renumber the rest |
 | POST | `/api/enhancements/:id/scenarios/:sno/testcases` | Test cases for one scenario (JSON: `regenerate`); cached unless `regenerate: true` |
 | GET | `/api/documents` | All stored enhancement documents |

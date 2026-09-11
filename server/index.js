@@ -348,6 +348,20 @@ app.get('/api/ai-status', wrap((req, res) => {
   res.json({ ready: hasApiKey(), provider, model, problem: keyProblem() });
 }));
 
+// Mark a scenario pass / fail (empty status clears it back to not run).
+app.patch('/api/enhancements/:id/scenarios/:sno/status', wrap((req, res) => {
+  const { status } = req.body || {};
+  const allowed = ['pass', 'fail', ''];
+  if (!allowed.includes(status)) {
+    return res.status(400).json({ error: 'Status must be pass, fail, or empty.' });
+  }
+
+  const updated = store.setScenarioStatus(req.params.id, Number(req.params.sno), status);
+  if (!updated) return res.status(404).json({ error: 'Test scenario not found.' });
+
+  res.json({ sno: updated.sno, status: updated.status || '', statusAt: updated.statusAt || '' });
+}));
+
 // Delete a single scenario row by its serial number.
 app.delete('/api/enhancements/:id/scenarios/:sno', wrap((req, res) => {
   const sno = Number(req.params.sno);
@@ -392,10 +406,11 @@ app.get('/api/enhancements/:id/export.csv', wrap((req, res) => {
     const text = String(value == null ? '' : value);
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  const header = ['S.No', 'Test Scenario', ...enhancement.extraColumns];
+  const header = ['S.No', 'Test Scenario', 'Status', ...enhancement.extraColumns];
   const lines = [header.map(cell).join(',')];
   enhancement.scenarios.forEach((s) => {
-    lines.push([s.sno, s.scenario, ...enhancement.extraColumns.map((c) => (s.extra || {})[c] || '')].map(cell).join(','));
+    const status = s.status ? s.status[0].toUpperCase() + s.status.slice(1) : 'Not run';
+    lines.push([s.sno, s.scenario, status, ...enhancement.extraColumns.map((c) => (s.extra || {})[c] || '')].map(cell).join(','));
   });
 
   const safeName = enhancement.name.replace(/[^a-z0-9._-]+/gi, '_').slice(0, 60) || 'scenarios';

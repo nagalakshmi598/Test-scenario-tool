@@ -10,6 +10,8 @@
   --muted: #5d6b8a;
   --white: #ffffff;
   --danger: #b3261e;
+  --pass: #1b7f4f;
+  --pass-tint: #eef8f2;
   --shadow: 0 1px 2px rgba(1, 41, 172, .06), 0 8px 24px rgba(1, 41, 172, .07);
   --radius: 10px;
 }
@@ -277,6 +279,29 @@ body {
 .tc-steps { margin: 0; padding-left: 18px; }
 .tc-steps li { margin-bottom: 4px; }
 .tc-steps li:last-child { margin-bottom: 0; }
+
+/* ---------- pass / fail per scenario ---------- */
+.scenario-table th.status-col, .scenario-table td.status-col { width: 132px; }
+.status-cell { display: flex; gap: 6px; }
+.status-btn {
+  flex: 1 1 auto; border-radius: 7px; padding: 5px 0;
+  font: 700 11.5px/1.3 inherit; cursor: pointer; letter-spacing: .3px;
+  border: 1px solid var(--border); background: var(--white); color: var(--muted);
+  transition: background .15s, color .15s, border-color .15s;
+}
+.status-btn.pass:hover { border-color: #b7dcc4; color: var(--pass); background: var(--pass-tint); }
+.status-btn.fail:hover { border-color: #eccfcd; color: var(--danger); background: #fdf3f2; }
+.status-btn.pass.active { background: var(--pass); border-color: var(--pass); color: var(--white); }
+.status-btn.fail.active { background: var(--danger); border-color: var(--danger); color: var(--white); }
+.status-btn:disabled { opacity: .6; cursor: wait; }
+
+/* the whole row picks up a tint, so a failure is visible at a glance */
+.scenario-table tbody tr.row-pass,
+.scenario-table tbody tr.row-pass:nth-child(even) { background: var(--pass-tint); }
+.scenario-table tbody tr.row-fail,
+.scenario-table tbody tr.row-fail:nth-child(even) { background: #fdf3f2; }
+.scenario-table tbody tr.row-pass td.sno { color: var(--pass); }
+.scenario-table tbody tr.row-fail td.sno { color: var(--danger); }
 
 /* ---------- product tabs (Documents) ---------- */
 .tabs {
