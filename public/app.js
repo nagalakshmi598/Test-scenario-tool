@@ -22,6 +22,7 @@ const state = {
   openDocs: new Set(),        // document ids expanded in the list
   docBodies: {},              // id -> full document (loaded on first expand)
   docTab: 'message',          // active product tab in Documents
+  editingDoc: null,           // document whose edit row should start open
 };
 
 const el = (id) => document.getElementById(id);
@@ -856,9 +857,12 @@ async function loadDocumentBody(id) {
   return doc;
 }
 
-/** The card is a dropdown: click to open the document, click again to close it. */
-async function toggleDocument(id) {
-  if (state.openDocs.has(id)) {
+/**
+ * The card is a dropdown: click to open the document, click again to close it.
+ * Only one document stays open — opening another closes the previous one.
+ */
+async function toggleDocument(id, { startEditing = false } = {}) {
+  if (state.openDocs.has(id) && !startEditing) {
     state.openDocs.delete(id);
     renderDocuments();
     return;
@@ -866,7 +870,9 @@ async function toggleDocument(id) {
 
   try {
     await loadDocumentBody(id);
+    state.openDocs.clear();          // only one document stays open at a time
     state.openDocs.add(id);
+    state.editingDoc = startEditing ? id : null;
     renderDocuments();
   } catch (err) {
     toast(err.message, true);
@@ -918,13 +924,19 @@ function renderDocuments() {
     const wrap = document.createElement('div');
     wrap.className = `doc-item${open ? ' open' : ''}`;
 
-    const card = document.createElement('button');
-    card.type = 'button';
+    // A div, not a button: the Edit control lives inside the header next to the
+    // name, and a button cannot legally contain another button.
+    const card = document.createElement('div');
     card.className = 'enh-card doc-card';
+    card.setAttribute('role', 'button');
+    card.tabIndex = 0;
     card.setAttribute('aria-expanded', open ? 'true' : 'false');
     card.innerHTML = `
-      <span>
-        <p class="enh-name"></p>
+      <span class="doc-card-main">
+        <span class="doc-name-row">
+          <span class="enh-name"></span>
+          <button type="button" class="edit-btn doc-edit-btn">Edit</button>
+        </span>
         <p class="enh-meta"></p>
       </span>
       <span class="enh-right">
@@ -936,7 +948,23 @@ function renderDocuments() {
     card.querySelector('.pill').textContent = KIND_LABEL[doc.kind] || doc.kind;
     card.querySelector('.chev').textContent = open ? '▾' : '▸';
     card.title = open ? 'Click to close this document' : 'Click to open this document';
-    card.addEventListener('click', () => toggleDocument(doc.id));
+
+    const toggle = () => toggleDocument(doc.id);
+    card.addEventListener('click', toggle);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggle();
+      }
+    });
+
+    const editBtn = card.querySelector('.doc-edit-btn');
+    editBtn.title = 'Rename this document or move it to another product';
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();                       // never toggles the card
+      toggleDocument(doc.id, { startEditing: true });
+    });
+
     wrap.appendChild(card);
 
     if (open) wrap.appendChild(buildDocumentPanel(state.docBodies[doc.id] || doc));
@@ -963,13 +991,6 @@ function buildDocumentPanel(doc) {
   download.setAttribute('download', '');
   bar.appendChild(download);
 
-  const edit = document.createElement('button');
-  edit.type = 'button';
-  edit.className = 'btn btn-outline doc-bar-btn';
-  edit.textContent = 'Edit';
-  edit.title = 'Rename this document or move it to another product';
-  bar.appendChild(edit);
-
   const close = document.createElement('button');
   close.type = 'button';
   close.className = 'btn btn-outline doc-bar-btn';
@@ -989,7 +1010,7 @@ function buildDocumentPanel(doc) {
   // Edit row: rename, and move the document to another product tab.
   const editRow = document.createElement('form');
   editRow.className = 'doc-edit';
-  editRow.hidden = true;
+  editRow.hidden = state.editingDoc !== doc.id;
 
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
@@ -1024,13 +1045,8 @@ function buildDocumentPanel(doc) {
   cancel.type = 'button';
   cancel.className = 'btn btn-outline doc-bar-btn';
   cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', () => { editRow.hidden = true; });
+  cancel.addEventListener('click', () => { editRow.hidden = true; state.editingDoc = null; });
   editRow.appendChild(cancel);
-
-  edit.addEventListener('click', () => {
-    editRow.hidden = !editRow.hidden;
-    if (!editRow.hidden) nameInput.focus();
-  });
 
   editRow.addEventListener('submit', async (event) => {
     event.preventDefault();
