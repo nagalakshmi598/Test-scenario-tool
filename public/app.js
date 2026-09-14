@@ -370,11 +370,6 @@ function renderScenarios() {
     if (idx === 0) th.className = 'sno';
     headRow.appendChild(th);
   });
-  const statusHead = document.createElement('th');
-  statusHead.className = 'status-col';
-  statusHead.textContent = 'Status';
-  headRow.appendChild(statusHead);
-
   const actHead = document.createElement('th');
   actHead.className = 'act';
   actHead.textContent = 'Action';
@@ -392,7 +387,7 @@ function renderScenarios() {
   if (!rows.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = columns.length + 2; // + Status and Action columns
+    td.colSpan = columns.length + 1; // + the Action column
     td.textContent = term ? 'No test scenario matches that search.' : 'No test scenarios uploaded yet.';
     tr.appendChild(td);
     dom.scenarioBody.appendChild(tr);
@@ -401,7 +396,6 @@ function renderScenarios() {
   // Every scenario gets its own row, numbered sequentially.
   rows.forEach((scenario) => {
     const tr = document.createElement('tr');
-    if (scenario.status) tr.className = `row-${scenario.status}`;
     const sno = document.createElement('td');
     sno.className = 'sno';
     sno.textContent = scenario.sno;
@@ -416,12 +410,6 @@ function renderScenarios() {
       td.textContent = (scenario.extra || {})[col] || '';
       tr.appendChild(td);
     });
-
-    // Pass / Fail sits beside the scenario; clicking the active one clears it.
-    const statusCell = document.createElement('td');
-    statusCell.className = 'status-col';
-    statusCell.appendChild(buildStatusControl(scenario));
-    tr.appendChild(statusCell);
 
     const act = document.createElement('td');
     act.className = 'act';
@@ -457,62 +445,7 @@ function renderScenarios() {
   } else if (!enh.scenarios.length) {
     dom.scenarioFoot.textContent = 'No test scenarios yet — upload a CSV or add one below.';
   } else {
-    const passed = enh.scenarios.filter((s) => s.status === 'pass').length;
-    const failed = enh.scenarios.filter((s) => s.status === 'fail').length;
-    const notRun = enh.scenarios.length - passed - failed;
-    dom.scenarioFoot.textContent =
-      `${plural(enh.scenarios.length, 'test scenario')} · ${passed} passed · ${failed} failed · ${notRun} not run`;
-  }
-}
-
-/* ---------------- pass / fail per scenario ---------------- */
-
-function buildStatusControl(scenario) {
-  const wrap = document.createElement('div');
-  wrap.className = 'status-cell';
-
-  [['pass', 'Pass'], ['fail', 'Fail']].forEach(([value, label]) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    const active = scenario.status === value;
-    btn.className = `status-btn ${value}${active ? ' active' : ''}`;
-    btn.textContent = label;
-    btn.title = active
-      ? `Marked ${label.toLowerCase()} — click again to clear`
-      : `Mark test scenario ${scenario.sno} as ${label.toLowerCase()}`;
-    btn.addEventListener('click', () => setScenarioStatus(scenario.sno, active ? '' : value, btn));
-    wrap.appendChild(btn);
-  });
-
-  return wrap;
-}
-
-async function setScenarioStatus(sno, status, button) {
-  const enh = state.enhancement;
-  if (!enh) return;
-
-  button.disabled = true;
-  try {
-    const result = await api(`/api/enhancements/${enh.id}/scenarios/${sno}/status`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    });
-
-    const scenario = enh.scenarios.find((s) => Number(s.sno) === Number(sno));
-    if (scenario) {
-      if (result.status) {
-        scenario.status = result.status;
-        scenario.statusAt = result.statusAt;
-      } else {
-        delete scenario.status;
-        delete scenario.statusAt;
-      }
-    }
-    renderScenarios();
-  } catch (err) {
-    button.disabled = false;
-    toast(err.message, true);
+    dom.scenarioFoot.textContent = `${plural(enh.scenarios.length, 'test scenario')} · serial numbers 1 to ${enh.scenarios.length}`;
   }
 }
 

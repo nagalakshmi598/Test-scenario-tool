@@ -176,26 +176,6 @@ function setTestCases(id, sno, { testCases, model, provider, generatedAt }) {
   return scenario;
 }
 
-/** Mark one scenario pass / fail, or clear it back to "not run". */
-function setScenarioStatus(id, sno, status) {
-  const enhancement = getEnhancement(id);
-  if (!enhancement) return null;
-
-  const scenario = enhancement.scenarios.find((s) => Number(s.sno) === Number(sno));
-  if (!scenario) return null;
-
-  if (status) {
-    scenario.status = status;
-    scenario.statusAt = new Date().toISOString();
-  } else {
-    delete scenario.status;
-    delete scenario.statusAt;
-  }
-  enhancement.updatedAt = new Date().toISOString();
-  persist();
-  return scenario;
-}
-
 /** Delete one scenario row; the rows left keep a clean 1..N numbering. */
 function deleteScenario(id, sno) {
   const enhancement = getEnhancement(id);
@@ -312,7 +292,6 @@ module.exports = {
   addScenario,
   deleteScenario,
   setTestCases,
-  setScenarioStatus,
   updateEnhancement,
   deleteEnhancement,
   summary,
