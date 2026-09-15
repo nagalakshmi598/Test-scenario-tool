@@ -128,47 +128,63 @@ async function loadProducts() {
   fillProductSelect();
 }
 
-function renderProducts() {
-  dom.productList.innerHTML = '';
-  state.products.forEach((product) => {
-    const li = document.createElement('li');
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = `product-item${state.product === product.key ? ' active' : ''}`;
-    btn.innerHTML = `
+/** Two-letter monogram for the nav chip: "Data Sprawl" -> DS, "Email" -> EM. */
+function monogram(label) {
+  const words = String(label).trim().split(/\s+/);
+  return (words.length > 1 ? words[0][0] + words[1][0] : String(label).slice(0, 2)).toUpperCase();
+}
+
+function navItem({ label, blurb, count, active, onClick, muted }) {
+  const li = document.createElement('li');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = `product-item${active ? ' active' : ''}`;
+  btn.innerHTML = `
+    <span class="p-top">
+      <span class="p-chip"></span>
       <span class="p-name">
         <strong></strong>
-        <span class="pill${product.enhancementCount ? '' : ' ghost'}"></span>
+        <span class="pill"></span>
       </span>
-      <p class="p-blurb"></p>`;
-    btn.querySelector('strong').textContent = product.label;
-    btn.querySelector('.pill').textContent = product.enhancementCount;
-    btn.querySelector('.p-blurb').textContent = product.blurb;
-    btn.addEventListener('click', () => openProduct(product.key));
-    li.appendChild(btn);
-    dom.productList.appendChild(li);
-  });
-
-  const docsLi = document.createElement('li');
-  const docsBtn = document.createElement('button');
-  docsBtn.type = 'button';
-  docsBtn.className = `product-item${state.view === 'documents' ? ' active' : ''}`;
-  docsBtn.innerHTML = `
-    <span class="p-name">
-      <strong></strong>
-      <span class="pill"></span>
     </span>
     <p class="p-blurb"></p>`;
-  docsBtn.querySelector('strong').textContent = 'Documents';
-  const docsPill = docsBtn.querySelector('.pill');
-  docsPill.textContent = state.documentCount || 0;
-  if (!state.documentCount) docsPill.classList.add('ghost');
-  docsBtn.querySelector('.p-blurb').textContent = 'Enhancement write-ups with matter and screenshots';
-  docsBtn.addEventListener('click', () => openDocuments());
-  docsLi.appendChild(docsBtn);
-  dom.productList.appendChild(docsLi);
+  btn.querySelector('.p-chip').textContent = monogram(label);
+  btn.querySelector('strong').textContent = label;
+  const pill = btn.querySelector('.pill');
+  pill.textContent = count;
+  if (muted) pill.classList.add('ghost');
+  btn.querySelector('.p-blurb').textContent = blurb;
+  btn.addEventListener('click', onClick);
+  li.appendChild(btn);
+  return li;
+}
 
+function renderProducts() {
+  dom.productList.innerHTML = '';
 
+  state.products.forEach((product) => {
+    dom.productList.appendChild(navItem({
+      label: product.label,
+      blurb: product.blurb,
+      count: product.enhancementCount,
+      muted: !product.enhancementCount,
+      active: state.product === product.key,
+      onClick: () => openProduct(product.key),
+    }));
+  });
+
+  const divider = document.createElement('li');
+  divider.className = 'nav-divider';
+  dom.productList.appendChild(divider);
+
+  dom.productList.appendChild(navItem({
+    label: 'Documents',
+    blurb: 'Enhancement write-ups with matter and screenshots',
+    count: state.documentCount || 0,
+    muted: !state.documentCount,
+    active: state.view === 'documents',
+    onClick: () => openDocuments(),
+  }));
 }
 
 function fillProductSelect() {
@@ -761,10 +777,74 @@ function resetToDashboard() {
   dom.enhancementView.hidden = false;
   dom.enhancementSearch.hidden = true;
   dom.addForProductBtn.hidden = true;
-  dom.productTitle.textContent = 'Select a product';
-  dom.productSub.textContent = 'Choose Message, Email or Content to see its enhancements.';
-  dom.enhancementList.innerHTML =
-    '<div class="empty"><h3>Message · Email · Content</h3><p>Pick a product on the left to list its enhancements and test scenarios.</p></div>';
+  dom.productTitle.textContent = 'Dashboard';
+  dom.productSub.textContent = 'Test scenarios and enhancement documents across every product.';
+  renderDashboard();
+}
+
+/** Landing view: the totals at a glance, then a card per product. */
+function renderDashboard() {
+  dom.enhancementList.innerHTML = '';
+
+  const totals = state.products.reduce(
+    (acc, p) => ({
+      enhancements: acc.enhancements + p.enhancementCount,
+      scenarios: acc.scenarios + p.scenarioCount,
+      testCases: acc.testCases + (p.testCaseCount || 0),
+    }),
+    { enhancements: 0, scenarios: 0, testCases: 0 }
+  );
+
+  const stats = document.createElement('div');
+  stats.className = 'stat-row';
+  [
+    ['Enhancements', totals.enhancements, 'features and customizations under test'],
+    ['Test scenarios', totals.scenarios, 'rows across every enhancement'],
+    ['Scenarios with test cases', totals.testCases, 'expanded into detailed test cases'],
+    ['Documents', state.documentCount || 0, 'write-ups with matter and screenshots'],
+  ].forEach(([label, value, hint]) => {
+    const tile = document.createElement('div');
+    tile.className = 'stat';
+    tile.innerHTML = '<p class="stat-value"></p><p class="stat-label"></p><p class="stat-hint"></p>';
+    tile.querySelector('.stat-value').textContent = value;
+    tile.querySelector('.stat-label').textContent = label;
+    tile.querySelector('.stat-hint').textContent = hint;
+    stats.appendChild(tile);
+  });
+  dom.enhancementList.appendChild(stats);
+
+  const heading = document.createElement('p');
+  heading.className = 'section-head';
+  heading.textContent = 'Products';
+  dom.enhancementList.appendChild(heading);
+
+  const grid = document.createElement('div');
+  grid.className = 'home-grid';
+
+  state.products.forEach((product) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'home-card';
+    card.innerHTML = `
+      <span class="home-card-top">
+        <span class="p-chip"></span>
+        <span class="home-card-name"></span>
+      </span>
+      <span class="home-card-blurb"></span>
+      <span class="home-card-stats"></span>`;
+    card.querySelector('.p-chip').textContent = monogram(product.label);
+    card.querySelector('.home-card-name').textContent = product.label;
+    card.querySelector('.home-card-blurb').textContent = product.blurb;
+    card.querySelector('.home-card-stats').textContent = [
+      plural(product.enhancementCount, 'enhancement'),
+      plural(product.scenarioCount, 'scenario'),
+      `${product.documentCount || 0} doc${(product.documentCount || 0) === 1 ? '' : 's'}`,
+    ].join('  ·  ');
+    card.addEventListener('click', () => openProduct(product.key));
+    grid.appendChild(card);
+  });
+
+  dom.enhancementList.appendChild(grid);
 }
 
 /* ---------------- enhancement documents ---------------- */

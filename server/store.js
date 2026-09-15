@@ -11,6 +11,7 @@ const PRODUCTS = [
   { key: 'message', label: 'Message', blurb: 'Chat, threads and message migration scenarios' },
   { key: 'email', label: 'Email', blurb: 'Mailbox, folders and email delivery scenarios' },
   { key: 'content', label: 'Content', blurb: 'Files, folders, permissions and content scenarios' },
+  { key: 'datasprawl', label: 'Data Sprawl', blurb: 'Scattered, duplicate and stale data across clouds' },
 ];
 
 let db = { enhancements: [], documents: [] };
@@ -77,6 +78,12 @@ function listProducts() {
       ...product,
       enhancementCount: items.length,
       scenarioCount: items.reduce((sum, e) => sum + e.scenarios.length, 0),
+      // what the dashboard tiles summarise
+      testCaseCount: items.reduce(
+        (sum, e) => sum + e.scenarios.filter((s) => s.testCases && s.testCases.length).length,
+        0
+      ),
+      documentCount: db.documents.filter((d) => d.product === product.key).length,
     };
   });
 }
