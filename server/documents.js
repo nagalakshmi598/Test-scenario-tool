@@ -229,6 +229,7 @@ function removeDocumentFiles(id) {
 }
 
 module.exports = {
+  sanitizeHtml,
   ALLOWED_EXT,
   DOC_DIR,
   docKind,

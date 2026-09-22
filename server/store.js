@@ -8,10 +8,10 @@ const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
 
 const PRODUCTS = [
-  { key: 'message', label: 'Message', blurb: 'Chat, threads and message migration scenarios' },
-  { key: 'email', label: 'Email', blurb: 'Mailbox, folders and email delivery scenarios' },
-  { key: 'content', label: 'Content', blurb: 'Files, folders, permissions and content scenarios' },
-  { key: 'datasprawl', label: 'Data Sprawl', blurb: 'Scattered, duplicate and stale data across clouds' },
+  { key: 'message', label: 'Message', blurb: 'Chat, threads and message migration' },
+  { key: 'email', label: 'Email', blurb: 'Mailbox, folders and email delivery' },
+  { key: 'content', label: 'Content', blurb: 'Files, folders and permissions' },
+  { key: 'datasprawl', label: 'Data Sprawl', blurb: 'Duplicate and stale data across clouds' },
 ];
 
 let db = { enhancements: [], documents: [] };
@@ -127,7 +127,7 @@ function createEnhancement({ product, name, description, sourceFile, scenarios, 
 }
 
 function renumber(scenarios) {
-  return scenarios.map((s, idx) => ({ ...s, sno: idx + 1 }));
+  return scenarios.map((s, idx) => ({ status: 'pass', ...s, sno: idx + 1 }));
 }
 
 function setScenarios(id, { scenarios, extraColumns, sourceFile, mode = 'replace' }) {
@@ -158,6 +158,7 @@ function addScenario(id, { scenario, extra }) {
 
   enhancement.scenarios.push({
     sno: enhancement.scenarios.length + 1,
+    status: 'pass',
     scenario: scenario.trim(),
     sourceSno: '',
     extra: cleanExtra,
@@ -181,6 +182,23 @@ function setTestCases(id, sno, { testCases, model, provider, generatedAt }) {
   enhancement.updatedAt = new Date().toISOString();
   persist();
   return scenario;
+}
+
+const SCENARIO_STATUS = ['pass', 'fail', 'pending'];
+
+/** Set or clear the run result on one scenario row. */
+function setScenarioStatus(id, sno, status) {
+  syncFromDisk();
+  const enhancement = getEnhancement(id);
+  if (!enhancement) return { status: 'no-enhancement' };
+
+  const scenario = enhancement.scenarios.find((s) => Number(s.sno) === Number(sno));
+  if (!scenario) return { status: 'no-scenario' };
+
+  scenario.status = status;
+  enhancement.updatedAt = new Date().toISOString();
+  persist();
+  return { status: 'ok', enhancement };
 }
 
 /** Delete one scenario row; the rows left keep a clean 1..N numbering. */
@@ -257,13 +275,17 @@ function createDocument(doc) {
   return record;
 }
 
-function updateDocument(id, { name, description, product }) {
+function updateDocument(id, { name, description, product, html }) {
   syncFromDisk();
   const doc = getDocument(id);
   if (!doc) return null;
   if (typeof name === 'string' && name.trim()) doc.name = name.trim();
   if (typeof description === 'string') doc.description = description.trim();
   if (typeof product === 'string') doc.product = product;
+  if (typeof html === 'string') {
+    doc.html = html;
+    doc.editedAt = new Date().toISOString();
+  }
   doc.updatedAt = new Date().toISOString();
   persist();
   return doc;
@@ -299,6 +321,8 @@ module.exports = {
   addScenario,
   deleteScenario,
   setTestCases,
+  setScenarioStatus,
+  SCENARIO_STATUS,
   updateEnhancement,
   deleteEnhancement,
   summary,

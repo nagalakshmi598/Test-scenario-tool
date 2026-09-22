@@ -8,12 +8,14 @@ const multer = require('multer');
 
 const store = require('./store');
 const { extractScenarios } = require('./parse');
+const { askAssistant } = require('./assistant');
 const { generateTestCases, hasApiKey, activeProvider, keyProblem } = require('./testcases');
 const {
   ALLOWED_EXT: DOC_EXT,
   ingestDocument,
   documentFilePath,
   removeDocumentFiles,
+  sanitizeHtml,
 } = require('./documents');
 
 const PORT = process.env.PORT || 4310;
@@ -121,7 +123,7 @@ app.post('/api/enhancements', enhancementUpload, wrap(async (req, res) => {
   const docFile = req.files && req.files.document && req.files.document[0];
 
   if (!store.isProduct(product)) {
-    return res.status(400).json({ error: 'Pick a product: message, email or content.' });
+    return res.status(400).json({ error: 'Select a product before creating the enhancement.' });
   }
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Enhancement / feature name is required.' });
@@ -131,7 +133,7 @@ app.post('/api/enhancements', enhancementUpload, wrap(async (req, res) => {
   }
   if (!sheet && !docFile) {
     return res.status(400).json({
-      error: 'Attach a test scenario file, a document, or both — at least one is needed.',
+      error: 'Attach a test scenario file, a document, or both. At least one is required.',
     });
   }
 
@@ -186,7 +188,7 @@ app.get('/api/enhancements/:id', wrap((req, res) => {
 app.post('/api/enhancements/:id/scenarios', upload.single('file'), wrap((req, res) => {
   const enhancement = store.getEnhancement(req.params.id);
   if (!enhancement) return res.status(404).json({ error: 'Enhancement not found.' });
-  if (!req.file) return res.status(400).json({ error: 'Attach a CSV or XLSX file of test scenarios.' });
+  if (!req.file) return res.status(400).json({ error: 'Attach a .csv or .xlsx file of test scenarios.' });
 
   const mode = req.body.mode === 'append' ? 'append' : 'replace';
   const { scenarios, extraColumns, skipped } = extractScenarios(req.file.buffer, req.file.originalname, {
@@ -211,10 +213,10 @@ app.post('/api/enhancements/:id/scenario', wrap((req, res) => {
 
   const { scenario, extra } = req.body || {};
   if (typeof scenario !== 'string' || !scenario.trim()) {
-    return res.status(400).json({ error: 'Type the test scenario before adding it.' });
+    return res.status(400).json({ error: 'Enter the test scenario before adding it.' });
   }
   if (scenario.trim().length > 2000) {
-    return res.status(400).json({ error: 'That test scenario is too long (2000 characters max).' });
+    return res.status(400).json({ error: 'The test scenario is too long (2,000 characters maximum).' });
   }
 
   const updated = store.addScenario(enhancement.id, { scenario, extra });
@@ -317,20 +319,37 @@ app.get('/api/documents/:id/assets/:asset', wrap((req, res) => {
   res.sendFile(file);
 }));
 
-// Rename a document, or move it to another product tab.
+// Rename a document, move it to another product tab, or correct its matter.
 app.patch('/api/documents/:id', wrap((req, res) => {
   const doc = store.getDocument(req.params.id);
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
-  const { name, description, product } = req.body || {};
+  const { name, description, product, html } = req.body || {};
   if (product !== undefined && product !== '' && !store.isProduct(product)) {
     return res.status(400).json({ error: 'Unknown product.' });
   }
   if (name !== undefined && !String(name).trim()) {
-    return res.status(400).json({ error: 'The document needs a name.' });
+    return res.status(400).json({ error: 'Enter a document name.' });
   }
 
-  res.json({ document: store.documentSummary(store.updateDocument(doc.id, { name, description, product })) });
+  // Only the kinds the tool renders as text can be edited in it. A PDF or a
+  // screenshot has no editable matter, and the stored file is never rewritten.
+  let matter;
+  if (html !== undefined) {
+    if (doc.kind !== 'docx' && doc.kind !== 'text') {
+      return res.status(400).json({ error: 'This document type cannot be edited in the tool.' });
+    }
+    if (typeof html !== 'string' || !html.trim()) {
+      return res.status(400).json({ error: 'The document cannot be saved empty.' });
+    }
+    if (html.length > 2000000) {
+      return res.status(413).json({ error: 'The document is too large to save.' });
+    }
+    matter = sanitizeHtml(html);
+  }
+
+  const updated = store.updateDocument(doc.id, { name, description, product, html: matter });
+  res.json({ document: store.documentSummary(updated) });
 }));
 
 app.delete('/api/documents/:id', wrap((req, res) => {
@@ -349,6 +368,25 @@ app.get('/api/ai-status', wrap((req, res) => {
 }));
 
 // Delete a single scenario row by its serial number.
+// Mark one scenario passed, failed, or not yet run.
+app.patch('/api/enhancements/:id/scenarios/:sno/status', wrap((req, res) => {
+  const { status } = req.body || {};
+  if (!store.SCENARIO_STATUS.includes(status)) {
+    return res.status(400).json({ error: 'Status must be pass, fail or pending.' });
+  }
+
+  const sno = Number(req.params.sno);
+  if (!Number.isInteger(sno) || sno < 1) {
+    return res.status(400).json({ error: 'Invalid scenario number.' });
+  }
+
+  const result = store.setScenarioStatus(req.params.id, sno, status);
+  if (result.status === 'no-enhancement') return res.status(404).json({ error: 'Enhancement not found.' });
+  if (result.status === 'no-scenario') return res.status(404).json({ error: `Test scenario ${sno} no longer exists.` });
+
+  res.json({ enhancement: result.enhancement });
+}));
+
 app.delete('/api/enhancements/:id/scenarios/:sno', wrap((req, res) => {
   const sno = Number(req.params.sno);
   if (!Number.isInteger(sno) || sno < 1) {
@@ -404,9 +442,16 @@ app.get('/api/enhancements/:id/export.csv', wrap((req, res) => {
   res.send(`\uFEFF${lines.join('\r\n')}\r\n`);
 }));
 
+// The in-tool assistant: answers questions about what this tool holds.
+app.post('/api/assistant', wrap(async (req, res) => {
+  const { question, history } = req.body || {};
+  const result = await askAssistant({ question, history });
+  res.json(result);
+}));
+
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ error: 'File is larger than the 10 MB limit.' });
+    return res.status(413).json({ error: 'The file exceeds the 10 MB limit.' });
   }
   const status = err.status || 400;
   if (status >= 500) console.error(err);

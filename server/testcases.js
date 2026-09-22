@@ -321,4 +321,4 @@ async function generateTestCases({ productLabel, enhancementName, scenarioText, 
   return { testCases, model, provider, generatedAt: new Date().toISOString() };
 }
 
-module.exports = { generateTestCases, hasApiKey, activeProvider, keyProblem, idPrefix };
+module.exports = { generateTestCases, hasApiKey, activeProvider, keyProblem, idPrefix, friendlyApiError };

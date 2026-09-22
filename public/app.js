@@ -23,6 +23,9 @@ const state = {
   docBodies: {},              // id -> full document (loaded on first expand)
   docTab: 'message',          // active product tab in Documents
   editingDoc: null,           // document whose edit row should start open
+  docsNavOpen: false,         // Documents nav dropdown showing the products
+  openHomeProduct: null,      // product key expanded on the dashboard
+  homeEnhancements: {},       // product key -> its enhancements (loaded on first expand)
 };
 
 const el = (id) => document.getElementById(id);
@@ -35,7 +38,6 @@ const dom = {
   productTitle: el('productTitle'),
   productSub: el('productSub'),
   enhancementSearch: el('enhancementSearch'),
-  addForProductBtn: el('addForProductBtn'),
   scenarioView: el('scenarioView'),
   enhancementTitle: el('enhancementTitle'),
   enhancementSub: el('enhancementSub'),
@@ -45,7 +47,6 @@ const dom = {
   scenarioSearch: el('scenarioSearch'),
   exportBtn: el('exportBtn'),
   reuploadBtn: el('reuploadBtn'),
-  deleteBtn: el('deleteBtn'),
   modal: el('modal'),
   modalTitle: el('modalTitle'),
   modalProduct: el('modalProduct'),
@@ -83,6 +84,59 @@ const dom = {
   renameForm: el('renameForm'),
   renameInput: el('renameInput'),
 };
+
+/* ---------------- browser history ----------------
+   Every view has an address, so the browser's back and forward arrows walk
+   the same path the user clicked. Hash routes keep a reload working without
+   the server needing to know about any of them. */
+
+function routeToHash(route) {
+  if (!route) return '#/';
+  if (route.view === 'enhancements') return `#/product/${route.product}`;
+  if (route.view === 'scenarios') return `#/enhancement/${route.id}`;
+  if (route.view === 'documents') {
+    if (route.expand) return `#/documents/${route.expand}`;
+    if (route.product) return `#/documents/p/${route.product}`;
+    return '#/documents';
+  }
+  return '#/';
+}
+
+function hashToRoute(hash) {
+  const parts = String(hash || '').replace(/^#\/?/, '').split('/').filter(Boolean);
+  if (parts[0] === 'product' && parts[1]) return { view: 'enhancements', product: parts[1] };
+  if (parts[0] === 'enhancement' && parts[1]) return { view: 'scenarios', id: parts[1] };
+  if (parts[0] === 'documents') {
+    if (parts[1] === 'p' && parts[2]) return { view: 'documents', product: parts[2] };
+    return { view: 'documents', expand: parts[1] || null };
+  }
+  return { view: 'dashboard' };
+}
+
+/** Add a step to the history stack — or replace it, when it is where we already are. */
+function pushRoute(route) {
+  const hash = routeToHash(route);
+  if (location.hash === hash) history.replaceState(route, '', hash);
+  else history.pushState(route, '', hash);
+}
+
+/** Render what a route asks for. Never touches history: the caller owns that. */
+async function applyRoute(route) {
+  if (route.view === 'enhancements' && state.products.some((p) => p.key === route.product)) {
+    return openProduct(route.product, { push: false });
+  }
+  if (route.view === 'scenarios') {
+    const shown = await openEnhancement(route.id, { push: false });
+    if (shown) return undefined;
+  } else if (route.view === 'documents') {
+    return openDocuments({ expand: route.expand, product: route.product, push: false });
+  }
+  return resetToDashboard({ push: false });
+}
+
+window.addEventListener('popstate', (event) => {
+  applyRoute(event.state || hashToRoute(location.hash));
+});
 
 /* ---------------- helpers ---------------- */
 
@@ -134,17 +188,22 @@ function monogram(label) {
   return (words.length > 1 ? words[0][0] + words[1][0] : String(label).slice(0, 2)).toUpperCase();
 }
 
-function navItem({ label, blurb, count, active, onClick, muted }) {
+/** Each product carries its own accent, so the nav is scannable at a glance. */
+const PRODUCT_TONE = { message: 'a', email: 'b', content: 'c', datasprawl: 'd' };
+
+function navItem({ label, blurb, count, active, onClick, muted, caret, tone }) {
   const li = document.createElement('li');
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `product-item${active ? ' active' : ''}`;
+  if (tone) btn.dataset.tone = tone;
   btn.innerHTML = `
     <span class="p-top">
       <span class="p-chip"></span>
       <span class="p-name">
         <strong></strong>
         <span class="pill"></span>
+        <span class="p-caret"></span>
       </span>
     </span>
     <p class="p-blurb"></p>`;
@@ -153,7 +212,11 @@ function navItem({ label, blurb, count, active, onClick, muted }) {
   const pill = btn.querySelector('.pill');
   pill.textContent = count;
   if (muted) pill.classList.add('ghost');
+  const caretEl = btn.querySelector('.p-caret');
+  caretEl.textContent = caret || '';
+  caretEl.hidden = !caret;
   btn.querySelector('.p-blurb').textContent = blurb;
+
   btn.addEventListener('click', onClick);
   li.appendChild(btn);
   return li;
@@ -169,6 +232,7 @@ function renderProducts() {
       count: product.enhancementCount,
       muted: !product.enhancementCount,
       active: state.product === product.key,
+      tone: PRODUCT_TONE[product.key] || 'a',
       onClick: () => openProduct(product.key),
     }));
   });
@@ -179,12 +243,45 @@ function renderProducts() {
 
   dom.productList.appendChild(navItem({
     label: 'Documents',
-    blurb: 'Enhancement write-ups with matter and screenshots',
+    blurb: 'Write-ups and screenshots',
     count: state.documentCount || 0,
     muted: !state.documentCount,
     active: state.view === 'documents',
-    onClick: () => openDocuments(),
+    caret: state.docsNavOpen ? '\u25be' : '\u25b8',
+    tone: 'e',
+    onClick: toggleDocsNav,
   }));
+
+  if (state.docsNavOpen) dom.productList.appendChild(buildDocsNavProducts());
+}
+
+
+/* Documents is a dropdown: it opens onto the products, and picking one shows
+   the documents uploaded against that product. */
+function toggleDocsNav() {
+  state.docsNavOpen = !state.docsNavOpen;
+  renderProducts();
+  if (state.docsNavOpen && state.view !== 'documents') openDocuments();
+}
+
+function buildDocsNavProducts() {
+  const li = document.createElement('li');
+  li.className = 'nav-sub';
+
+  state.products.forEach((product) => {
+    const on = state.view === 'documents' && state.docTab === product.key;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `nav-sub-item${on ? ' active' : ''}`;
+    btn.innerHTML = '<span class="nav-sub-name"></span><span class="pill ghost"></span>';
+    btn.querySelector('.nav-sub-name').textContent = product.label;
+    btn.querySelector('.pill').textContent = product.documentCount || 0;
+    btn.title = `Documents uploaded for ${product.label}`;
+    btn.addEventListener('click', () => openDocuments({ product: product.key }));
+    li.appendChild(btn);
+  });
+
+  return li;
 }
 
 function fillProductSelect() {
@@ -199,7 +296,8 @@ function fillProductSelect() {
 
 /* ---------------- enhancement list ---------------- */
 
-async function openProduct(key, { silent = false } = {}) {
+async function openProduct(key, { silent = false, push = true } = {}) {
+  if (push) pushRoute({ view: 'enhancements', product: key });
   state.product = key;
   state.enhancement = null;
   state.view = 'enhancements';
@@ -210,11 +308,10 @@ async function openProduct(key, { silent = false } = {}) {
   hideAllViews();
   dom.enhancementView.hidden = false;
   dom.enhancementSearch.hidden = false;
-  dom.addForProductBtn.hidden = false;
 
   const product = state.products.find((p) => p.key === key);
-  dom.productTitle.textContent = `${product.label} — enhancements`;
-  dom.productSub.textContent = 'Pick an enhancement to see its uploaded test scenarios.';
+  dom.productTitle.textContent = `${product.label} Migration Scenarios`;
+  dom.productSub.textContent = 'Select an enhancement to view its test scenarios.';
   renderCrumbs();
 
   try {
@@ -239,15 +336,10 @@ function renderEnhancements() {
     const empty = document.createElement('div');
     empty.className = 'empty';
     if (state.enhancements.length && term) {
-      empty.innerHTML = '<h3>No match</h3><p>No enhancement matches that search.</p>';
+      empty.innerHTML = '<h3>No Matches Found</h3><p>No enhancement matches your search.</p>';
     } else {
-      empty.innerHTML = `<h3>No enhancements yet</h3>
-        <p>Add the enhancement or feature you are testing and upload its test scenario CSV.</p>`;
-      const btn = document.createElement('button');
-      btn.className = 'btn btn-primary';
-      btn.textContent = '+ New Enhancement';
-      btn.addEventListener('click', () => openCreateModal(state.product));
-      empty.appendChild(btn);
+      empty.innerHTML = `<h3>No Enhancements Yet</h3>
+        <p>Use <strong>+ New Enhancement</strong> on the left to create one and upload its test scenario file.</p>`;
     }
     dom.enhancementList.appendChild(empty);
     return;
@@ -269,7 +361,7 @@ function renderEnhancements() {
     card.querySelector('.enh-name').textContent = enh.name;
     const meta = [
       enh.description,
-      enh.sourceFile ? `File: ${enh.sourceFile}` : '',
+      enh.sourceFile,
       `Updated ${formatDate(enh.updatedAt)}`,
     ].filter(Boolean).join('  ·  ');
     card.querySelector('.enh-meta').textContent = meta;
@@ -281,11 +373,12 @@ function renderEnhancements() {
 
 /* ---------------- scenario table ---------------- */
 
-async function openEnhancement(id) {
+async function openEnhancement(id, { push = true } = {}) {
   try {
     const { enhancement, documents } = await api(`/api/enhancements/${id}`);
     state.enhancement = enhancement;
     state.enhancementDocs = documents || [];
+    state.product = enhancement.product;
     state.view = 'scenarios';
     state.scenarioFilter = '';
     state.openTestCases = new Set();
@@ -298,7 +391,7 @@ async function openEnhancement(id) {
     dom.enhancementSub.textContent = [
       productLabel(enhancement.product),
       enhancement.description,
-      enhancement.sourceFile ? `Source: ${enhancement.sourceFile}` : '',
+      enhancement.sourceFile,
       `Uploaded ${formatDate(enhancement.createdAt)}`,
     ].filter(Boolean).join('  ·  ');
     dom.exportBtn.href = `/api/enhancements/${enhancement.id}/export.csv`;
@@ -307,11 +400,15 @@ async function openEnhancement(id) {
     dom.docLinkBtn.hidden = !linked;
     if (linked) dom.docLinkBtn.onclick = () => openDocuments({ expand: linked.id });
 
+    renderProducts();
     renderCrumbs();
     renderScenarios();
     renderAddBoxExtras();
+    if (push) pushRoute({ view: 'scenarios', id: enhancement.id });
+    return true;
   } catch (err) {
     toast(err.message, true);
+    return false;
   }
 }
 
@@ -338,7 +435,7 @@ async function addScenarioInTool(event) {
   const text = dom.addScenarioText.value.trim();
   if (!text) {
     dom.addScenarioText.focus();
-    toast('Type the test scenario before adding it.', true);
+    toast('Enter the test scenario before adding it.', true);
     return;
   }
 
@@ -364,7 +461,7 @@ async function addScenarioInTool(event) {
     dom.scenarioSearch.value = '';
     renderScenarios();
     await loadProducts();
-    toast(`Added as test scenario ${result.sno}.`);
+    toast(`Test scenario ${result.sno} added.`);
     dom.addScenarioText.focus();
   } catch (err) {
     toast(err.message, true);
@@ -373,11 +470,161 @@ async function addScenarioInTool(event) {
   }
 }
 
+/* ---------------- icons ----------------
+   Inline so they inherit the button's colour and need no extra request. */
+
+const ICON = {
+  download: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 1.6v7.2m0 0L5.2 6M8 8.8 10.8 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.4 10.8v1.6a2 2 0 0 0 2 2h7.2a2 2 0 0 0 2-2v-1.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  pass: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M3.4 8.4l3 3 6.2-6.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  fail: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
+  pending: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 5.2V8l2 1.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+};
+
+/** An icon-only button: the label lives in the tooltip and for screen readers. */
+function iconButton(icon, label, className = '') {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = `icon-btn-sq ${className}`.trim();
+  btn.innerHTML = ICON[icon];
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  return btn;
+}
+
+/* ---------------- run status ----------------
+   Scenarios written before the tool tracked results count as passed: they were
+   run and signed off, the tool simply had nowhere to record it. */
+
+const STATUS_ORDER = ['pass', 'fail', 'pending'];
+const STATUS_LABEL = { pass: 'Pass', fail: 'Fail', pending: 'Not run' };
+
+function scenarioStatus(scenario) {
+  const value = scenario && scenario.status;
+  return STATUS_ORDER.includes(value) ? value : 'pass';
+}
+
+async function cycleScenarioStatus(sno, button) {
+  const enh = state.enhancement;
+  if (!enh) return;
+
+  const scenario = enh.scenarios.find((s) => Number(s.sno) === Number(sno));
+  if (!scenario) return;
+
+  const next = STATUS_ORDER[(STATUS_ORDER.indexOf(scenarioStatus(scenario)) + 1) % STATUS_ORDER.length];
+  button.disabled = true;
+  try {
+    const result = await api(`/api/enhancements/${enh.id}/scenarios/${sno}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: next }),
+    });
+    state.enhancement = result.enhancement;
+    renderScenarios();
+  } catch (err) {
+    button.disabled = false;
+    toast(err.message, true);
+  }
+}
+
+/** The per-row Pass / Fail / Not run pill. Clicking it steps to the next one. */
+function buildStatusPill(scenario) {
+  const value = scenarioStatus(scenario);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = `status-pill is-${value}`;
+  btn.innerHTML = `${ICON[value]}<span></span>`;
+  btn.querySelector('span').textContent = STATUS_LABEL[value];
+  btn.title = `${STATUS_LABEL[value]} — click to change`;
+  btn.addEventListener('click', () => cycleScenarioStatus(scenario.sno, btn));
+  return btn;
+}
+
+/* The ACTION header carries a menu of the things that act on the whole table
+   at once. The menu is fixed-positioned: .table-wrap scrolls, and an absolutely
+   positioned menu would be clipped by it. */
+function buildActionMenu() {
+  const enh = state.enhancement;
+
+  const wrap = document.createElement('span');
+  wrap.className = 'bulk';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'bulk-btn';
+  btn.textContent = 'Actions \u25be';
+  btn.title = 'Actions for every scenario in this table';
+  btn.setAttribute('aria-haspopup', 'true');
+  btn.setAttribute('aria-expanded', 'false');
+  wrap.appendChild(btn);
+
+  const menu = document.createElement('div');
+  menu.className = 'bulk-menu';
+  menu.hidden = true;
+  wrap.appendChild(menu);
+
+  const item = (text, onClick) => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'bulk-item';
+    el.textContent = text;
+    el.addEventListener('click', () => { closeActionMenu(); onClick(); });
+    menu.appendChild(el);
+    return el;
+  };
+
+  const total = enh.scenarios.length;
+  const allOpen = Boolean(total) && state.openTestCases.size >= total;
+
+  const expand = item('Expand all test cases', () => {
+    state.openTestCases = new Set(enh.scenarios.map((s) => s.sno));
+    renderScenarios();
+  });
+  expand.disabled = !total || allOpen;
+
+  const collapse = item('Collapse all', () => {
+    state.openTestCases.clear();
+    renderScenarios();
+  });
+  collapse.disabled = !state.openTestCases.size;
+
+  const sep = document.createElement('div');
+  sep.className = 'bulk-sep';
+  menu.appendChild(sep);
+
+  const csv = document.createElement('a');
+  csv.className = 'bulk-item';
+  csv.textContent = 'Export CSV';
+  csv.href = `/api/enhancements/${enh.id}/export.csv`;
+  csv.setAttribute('download', '');
+  csv.addEventListener('click', () => closeActionMenu());
+  menu.appendChild(csv);
+
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const wasClosed = menu.hidden;
+    closeActionMenu();
+    if (!wasClosed) return;
+
+    const rect = btn.getBoundingClientRect();
+    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    menu.style.right = `${Math.round(window.innerWidth - rect.right)}px`;
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+  });
+
+  return wrap;
+}
+
+function closeActionMenu() {
+  document.querySelectorAll('.bulk-menu').forEach((m) => { m.hidden = true; });
+  document.querySelectorAll('.bulk-btn').forEach((b) => b.setAttribute('aria-expanded', 'false'));
+}
+
 function renderScenarios() {
   const enh = state.enhancement;
   if (!enh) return;
 
-  const columns = ['S.No', 'Test Scenario', ...enh.extraColumns];
+  const columns = ['S.No', 'Test Scenario', ...enh.extraColumns, 'Status'];
   dom.scenarioHead.innerHTML = '';
   const headRow = document.createElement('tr');
   columns.forEach((name, idx) => {
@@ -388,7 +635,7 @@ function renderScenarios() {
   });
   const actHead = document.createElement('th');
   actHead.className = 'act';
-  actHead.textContent = 'Action';
+  actHead.appendChild(buildActionMenu());
   headRow.appendChild(actHead);
   dom.scenarioHead.appendChild(headRow);
 
@@ -404,7 +651,7 @@ function renderScenarios() {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
     td.colSpan = columns.length + 1; // + the Action column
-    td.textContent = term ? 'No test scenario matches that search.' : 'No test scenarios uploaded yet.';
+    td.textContent = term ? 'No test scenario matches your search.' : 'No test scenarios have been uploaded yet.';
     tr.appendChild(td);
     dom.scenarioBody.appendChild(tr);
   }
@@ -427,6 +674,11 @@ function renderScenarios() {
       tr.appendChild(td);
     });
 
+    const statusCell = document.createElement('td');
+    statusCell.className = 'status-cell';
+    statusCell.appendChild(buildStatusPill(scenario));
+    tr.appendChild(statusCell);
+
     const act = document.createElement('td');
     act.className = 'act';
 
@@ -434,18 +686,11 @@ function renderScenarios() {
     tcBtn.type = 'button';
     tcBtn.className = 'tc-btn';
     const open = state.openTestCases.has(scenario.sno);
-    tcBtn.textContent = open ? 'Hide Test Cases' : 'Test Cases';
-    tcBtn.title = `Detailed test cases for test scenario ${scenario.sno}`;
+    tcBtn.textContent = open ? 'Hide Test Cases' : 'View Test Cases';
+    tcBtn.title = `Test cases for scenario ${scenario.sno}`;
     tcBtn.addEventListener('click', () => toggleTestCases(scenario.sno));
     act.appendChild(tcBtn);
 
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'del-btn';
-    del.textContent = 'Delete';
-    del.title = `Delete test scenario ${scenario.sno}`;
-    del.addEventListener('click', () => deleteScenarioRow(scenario.sno, scenario.scenario, del));
-    act.appendChild(del);
     tr.appendChild(act);
 
     dom.scenarioBody.appendChild(tr);
@@ -459,9 +704,9 @@ function renderScenarios() {
   if (term) {
     dom.scenarioFoot.textContent = `Showing ${rows.length} of ${plural(enh.scenarios.length, 'test scenario')}`;
   } else if (!enh.scenarios.length) {
-    dom.scenarioFoot.textContent = 'No test scenarios yet — upload a CSV or add one below.';
+    dom.scenarioFoot.textContent = 'No test scenarios yet.';
   } else {
-    dom.scenarioFoot.textContent = `${plural(enh.scenarios.length, 'test scenario')} · serial numbers 1 to ${enh.scenarios.length}`;
+    dom.scenarioFoot.textContent = plural(enh.scenarios.length, 'test scenario');
   }
 }
 
@@ -488,7 +733,7 @@ function buildTestCaseRow(scenario, colSpan) {
   head.className = 'tc-head';
   const title = document.createElement('span');
   title.className = 'tc-title';
-  title.textContent = `Test cases for test scenario ${scenario.sno}`;
+  title.textContent = `Test Cases for Test Scenario ${scenario.sno}`;
   head.appendChild(title);
 
   const meta = document.createElement('span');
@@ -517,14 +762,14 @@ function buildTestCaseRow(scenario, colSpan) {
     body.appendChild(renderTestCaseTable(cases));
   } else {
     meta.textContent = 'Not generated yet';
-    action.textContent = 'Generate test cases';
+    action.textContent = 'Generate Test Cases';
     action.classList.add('btn-primary');
     action.classList.remove('btn-outline');
     action.addEventListener('click', () => runTestCases(scenario.sno, false, action, body));
     const hint = document.createElement('p');
     hint.className = 'tc-hint';
     hint.textContent =
-      'AI writes the Test Case, Preconditions, Test Steps and Expected Result for this scenario. You can regenerate any time.';
+      'Generates the test case, preconditions, steps and expected result.';
     body.appendChild(hint);
   }
 
@@ -613,7 +858,7 @@ async function runTestCases(sno, regenerate, button, body) {
   body.innerHTML = '';
   const loading = document.createElement('p');
   loading.className = 'tc-loading';
-  loading.textContent = 'Writing the test cases — this usually takes 10–30 seconds…';
+  loading.textContent = 'Generating test cases…';
   body.appendChild(loading);
 
   try {
@@ -629,7 +874,7 @@ async function runTestCases(sno, regenerate, button, body) {
       scenario.testCasesMeta = result.meta;
     }
     renderScenarios();
-    toast(`${result.testCases.length} test case(s) ready for scenario ${sno}.`);
+    toast(`${plural(result.testCases.length, 'test case')} generated for test scenario ${sno}.`);
   } catch (err) {
     button.disabled = false;
     button.textContent = previousLabel;
@@ -662,7 +907,7 @@ async function submitRename(event) {
 
   const name = dom.renameInput.value.trim();
   if (!name) {
-    toast('Enter a name.', true);
+    toast('Enter an enhancement name.', true);
     return;
   }
   if (name === enh.name) {
@@ -679,51 +924,8 @@ async function submitRename(event) {
     cancelRename();
     await loadProducts();
     await openEnhancement(enh.id);
-    toast('Name updated.');
+    toast('Enhancement name updated.');
   } catch (err) {
-    toast(err.message, true);
-  }
-}
-
-/* ---------------- yes / no confirm ---------------- */
-
-let confirmResolve = null;
-
-function askConfirm(question, quote) {
-  el('confirmText').textContent = question;
-  const quoteEl = el('confirmQuote');
-  quoteEl.textContent = quote || '';
-  quoteEl.hidden = !quote;
-  el('confirmModal').hidden = false;
-  setTimeout(() => el('confirmNo').focus(), 30);
-
-  return new Promise((resolve) => { confirmResolve = resolve; });
-}
-
-function settleConfirm(answer) {
-  el('confirmModal').hidden = true;
-  const resolve = confirmResolve;
-  confirmResolve = null;
-  if (resolve) resolve(answer);
-}
-
-async function deleteScenarioRow(sno, text, button) {
-  const enh = state.enhancement;
-  if (!enh) return;
-
-  const yes = await askConfirm(`Delete test scenario ${sno} from "${enh.name}"?`, text);
-  if (!yes) return;
-
-  button.disabled = true;
-  try {
-    const result = await api(`/api/enhancements/${enh.id}/scenarios/${sno}`, { method: 'DELETE' });
-    state.enhancement = result.enhancement;
-    renderScenarios();          // remaining rows are renumbered 1..N by the server
-    renderAddBoxExtras();
-    await loadProducts();
-    toast(`Test scenario ${sno} deleted.`);
-  } catch (err) {
-    button.disabled = false;
     toast(err.message, true);
   }
 }
@@ -737,7 +939,7 @@ function renderCrumbs() {
     if (dom.crumbs.childNodes.length) {
       const sep = document.createElement('span');
       sep.className = 'sep';
-      sep.textContent = '/';
+      sep.textContent = '\u203a';
       dom.crumbs.appendChild(sep);
     }
     if (onClick) {
@@ -766,7 +968,8 @@ function renderCrumbs() {
   if (state.enhancement) add(state.enhancement.name, null);
 }
 
-function resetToDashboard() {
+function resetToDashboard({ push = true } = {}) {
+  if (push) pushRoute({ view: 'dashboard' });
   state.product = null;
   state.enhancement = null;
   state.enhancements = [];
@@ -776,9 +979,8 @@ function resetToDashboard() {
   hideAllViews();
   dom.enhancementView.hidden = false;
   dom.enhancementSearch.hidden = true;
-  dom.addForProductBtn.hidden = true;
   dom.productTitle.textContent = 'Dashboard';
-  dom.productSub.textContent = 'Test scenarios and enhancement documents across every product.';
+  dom.productSub.textContent = 'Test scenarios and documents across all products.';
   renderDashboard();
 }
 
@@ -798,13 +1000,14 @@ function renderDashboard() {
   const stats = document.createElement('div');
   stats.className = 'stat-row';
   [
-    ['Enhancements', totals.enhancements, 'features and customizations under test'],
-    ['Test scenarios', totals.scenarios, 'rows across every enhancement'],
-    ['Scenarios with test cases', totals.testCases, 'expanded into detailed test cases'],
-    ['Documents', state.documentCount || 0, 'write-ups with matter and screenshots'],
-  ].forEach(([label, value, hint]) => {
+    ['Enhancements', totals.enhancements, 'Under test', 'a'],
+    ['Test Scenarios', totals.scenarios, 'Across all enhancements', 'b'],
+    ['Scenarios with Test Cases', totals.testCases, 'With detailed test cases', 'c'],
+    ['Documents', state.documentCount || 0, 'Write-ups and screenshots', 'd'],
+  ].forEach(([label, value, hint, tone]) => {
     const tile = document.createElement('div');
     tile.className = 'stat';
+    tile.dataset.tone = tone;
     tile.innerHTML = '<p class="stat-value"></p><p class="stat-label"></p><p class="stat-hint"></p>';
     tile.querySelector('.stat-value').textContent = value;
     tile.querySelector('.stat-label').textContent = label;
@@ -822,34 +1025,138 @@ function renderDashboard() {
   grid.className = 'home-grid';
 
   state.products.forEach((product) => {
+    const open = state.openHomeProduct === product.key;
+
+    const item = document.createElement('div');
+    item.className = `home-item${open ? ' open' : ''}`;
+
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'home-card';
+    card.dataset.tone = PRODUCT_TONE[product.key] || 'a';
+    card.setAttribute('aria-expanded', open ? 'true' : 'false');
     card.innerHTML = `
       <span class="home-card-top">
         <span class="p-chip"></span>
         <span class="home-card-name"></span>
+        <span class="home-card-chev"></span>
       </span>
       <span class="home-card-blurb"></span>
       <span class="home-card-stats"></span>`;
     card.querySelector('.p-chip').textContent = monogram(product.label);
     card.querySelector('.home-card-name').textContent = product.label;
+    card.querySelector('.home-card-chev').textContent = open ? '▾' : '▸';
     card.querySelector('.home-card-blurb').textContent = product.blurb;
     card.querySelector('.home-card-stats').textContent = [
       plural(product.enhancementCount, 'enhancement'),
       plural(product.scenarioCount, 'scenario'),
       `${product.documentCount || 0} doc${(product.documentCount || 0) === 1 ? '' : 's'}`,
     ].join('  ·  ');
-    card.addEventListener('click', () => openProduct(product.key));
-    grid.appendChild(card);
+    card.title = open ? `Close ${product.label}` : `Open ${product.label}`;
+    card.addEventListener('click', () => toggleHomeProduct(product.key));
+    item.appendChild(card);
+
+    if (open) item.appendChild(buildHomePanel(product));
+    grid.appendChild(item);
   });
 
   dom.enhancementList.appendChild(grid);
 }
 
+/**
+ * A dashboard product card is a dropdown, the same way a document card is:
+ * click to open its scenarios in place, click again to close it. Only one
+ * product stays open at a time.
+ */
+async function toggleHomeProduct(key) {
+  if (state.openHomeProduct === key) {
+    state.openHomeProduct = null;
+    renderDashboard();
+    return;
+  }
+
+  try {
+    if (!state.homeEnhancements[key]) {
+      const { enhancements } = await api(`/api/products/${key}/enhancements`);
+      state.homeEnhancements[key] = enhancements;
+    }
+    state.openHomeProduct = key;
+    renderDashboard();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+/** The open card's body: that product's enhancements, and a way out to the full list. */
+function buildHomePanel(product) {
+  const panel = document.createElement('div');
+  panel.className = 'home-panel';
+
+  const bar = document.createElement('div');
+  bar.className = 'home-panel-bar';
+
+  const label = document.createElement('span');
+  label.className = 'home-panel-label';
+  label.textContent = plural(product.enhancementCount, 'enhancement');
+  bar.appendChild(label);
+
+  const openAll = document.createElement('button');
+  openAll.type = 'button';
+  openAll.className = 'btn btn-outline home-panel-btn';
+  openAll.textContent = 'Open full list';
+  openAll.addEventListener('click', () => openProduct(product.key));
+  bar.appendChild(openAll);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'btn btn-outline home-panel-btn';
+  close.textContent = 'Close';
+  close.addEventListener('click', () => toggleHomeProduct(product.key));
+  bar.appendChild(close);
+
+  panel.appendChild(bar);
+
+  const list = document.createElement('div');
+  list.className = 'home-panel-list';
+
+  const items = state.homeEnhancements[product.key] || [];
+  if (!items.length) {
+    const none = document.createElement('p');
+    none.className = 'home-panel-empty';
+    none.textContent = 'No enhancements yet.';
+    list.appendChild(none);
+  }
+
+  items.forEach((enh) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'home-row';
+    row.innerHTML = `
+      <span class="home-row-main">
+        <span class="home-row-name"></span>
+        <span class="home-row-meta"></span>
+      </span>
+      <span class="home-row-right">
+        <span class="pill"></span>
+        <span class="chev">&rsaquo;</span>
+      </span>`;
+    row.querySelector('.home-row-name').textContent = enh.name;
+    row.querySelector('.home-row-meta').textContent = [
+      enh.description,
+      `Updated ${formatDate(enh.updatedAt)}`,
+    ].filter(Boolean).join('  ·  ');
+    row.querySelector('.pill').textContent = plural(enh.scenarioCount, 'scenario');
+    row.addEventListener('click', () => openEnhancement(enh.id));
+    list.appendChild(row);
+  });
+
+  panel.appendChild(list);
+  return panel;
+}
+
 /* ---------------- enhancement documents ---------------- */
 
-const KIND_LABEL = { docx: 'Word document', pdf: 'PDF', image: 'Screenshot', text: 'Text / Markdown' };
+const KIND_LABEL = { docx: 'Word Document', pdf: 'PDF', image: 'Screenshot', text: 'Text / Markdown' };
 
 function hideAllViews() {
   dom.enhancementView.hidden = true;
@@ -857,7 +1164,9 @@ function hideAllViews() {
   dom.documentsView.hidden = true;
 }
 
-async function openDocuments({ expand } = {}) {
+async function openDocuments({ expand, product, push = true } = {}) {
+  if (push) pushRoute({ view: 'documents', expand: expand || null, product: product || null });
+  if (product) state.docsNavOpen = true;
   state.product = null;
   state.enhancement = null;
   state.view = 'documents';
@@ -871,15 +1180,21 @@ async function openDocuments({ expand } = {}) {
     const { documents } = await api('/api/documents');
     state.documents = documents;
 
+    // Arriving with no document named means the list shows collapsed — this is
+    // what the Back arrow lands on after a document was opened.
+    if (!expand) state.openDocs.clear();
+
     if (expand) {
       const target = documents.find((d) => d.id === expand);
-      if (target) state.docTab = target.product || 'unassigned';
+      if (target && !documentsInTab(state.docTab).some((d) => d.id === target.id)) {
+        state.docTab = target.product || 'unassigned';
+      }
       await loadDocumentBody(expand);
       state.openDocs.add(expand);
-    } else if (!documentsInTab(state.docTab).length) {
-      // land on a tab that actually has something in it
-      const firstFilled = docTabs().find((t) => documentsInTab(t.key).length);
-      if (firstFilled) state.docTab = firstFilled.key;
+    } else if (product) {
+      state.docTab = product;
+    } else {
+      state.docTab = 'all';       // the Documents nav item means every product
     }
 
     renderProducts();
@@ -893,12 +1208,13 @@ async function openDocuments({ expand } = {}) {
 
 /** One tab per product, plus a transitional tab for documents with no product. */
 function docTabs() {
-  const tabs = state.products.map((p) => ({ key: p.key, label: p.label }));
+  const tabs = [{ key: 'all', label: 'All' }, ...state.products.map((p) => ({ key: p.key, label: p.label }))];
   if (state.documents.some((d) => !d.product)) tabs.push({ key: 'unassigned', label: 'Unassigned' });
   return tabs;
 }
 
 function documentsInTab(tabKey) {
+  if (tabKey === 'all') return state.documents;
   return state.documents.filter((d) => (tabKey === 'unassigned' ? !d.product : d.product === tabKey));
 }
 
@@ -922,6 +1238,9 @@ function renderDocTabs() {
 
     btn.addEventListener('click', () => {
       state.docTab = tab.key;
+      state.openDocs.clear();
+      pushRoute({ view: 'documents', product: tab.key });
+      renderProducts();
       renderDocTabs();
       renderDocuments();
     });
@@ -941,15 +1260,17 @@ async function loadDocumentBody(id) {
  * The card is a dropdown: click to open the document, click again to close it.
  * Only one document stays open — opening another closes the previous one.
  */
-async function toggleDocument(id, { startEditing = false } = {}) {
+async function toggleDocument(id, { startEditing = false, push = true } = {}) {
   if (state.openDocs.has(id) && !startEditing) {
     state.openDocs.delete(id);
+    if (push) pushRoute({ view: 'documents', expand: null });
     renderDocuments();
     return;
   }
 
   try {
     await loadDocumentBody(id);
+    if (push) pushRoute({ view: 'documents', expand: id });
     state.openDocs.clear();          // only one document stays open at a time
     state.openDocs.add(id);
     state.editingDoc = startEditing ? id : null;
@@ -961,12 +1282,12 @@ async function toggleDocument(id, { startEditing = false } = {}) {
 
 function documentMeta(doc) {
   return [
-    KIND_LABEL[doc.kind] || doc.kind,
-    doc.product ? productLabel(doc.product) : '',
+    state.docTab === 'all' && doc.product ? productLabel(doc.product) : '',
     doc.description,
-    `File: ${doc.fileName}`,
+    doc.fileName,
     doc.imageCount ? plural(doc.imageCount, 'screenshot') : '',
     `Added ${formatDate(doc.createdAt)}`,
+    doc.editedAt ? `Edited ${formatDate(doc.editedAt)}` : '',
   ].filter(Boolean).join('  ·  ');
 }
 
@@ -983,15 +1304,16 @@ function renderDocuments() {
     const empty = document.createElement('div');
     empty.className = 'empty';
     if (inTab.length && term) {
-      empty.innerHTML = '<h3>No match</h3><p>No document in this tab matches that search.</p>';
+      empty.innerHTML = '<h3>No Matches Found</h3><p>No document in this tab matches your search.</p>';
     } else {
-      const where = state.docTab === 'unassigned' ? '' : ` for ${productLabel(state.docTab)}`;
-      empty.innerHTML = `<h3>No documents${where} yet</h3>
-        <p>Upload the write-up for an enhancement or customization — the matter and its screenshots
-        are shown right here. You can also attach one while creating a new enhancement.</p>`;
+      const where = (state.docTab === 'unassigned' || state.docTab === 'all')
+        ? ''
+        : ` for ${productLabel(state.docTab)}`;
+      empty.innerHTML = `<h3>No Documents${where} Yet</h3>
+        <p>Upload a write-up to read its content and screenshots here.</p>`;
       const btn = document.createElement('button');
       btn.className = 'btn btn-primary';
-      btn.textContent = '+ Upload document';
+      btn.textContent = '+ Upload Document';
       btn.addEventListener('click', openDocumentModal);
       empty.appendChild(btn);
     }
@@ -1015,7 +1337,7 @@ function renderDocuments() {
       <span class="doc-card-main">
         <span class="doc-name-row">
           <span class="enh-name"></span>
-          <button type="button" class="edit-btn doc-edit-btn">Edit</button>
+          <button type="button" class="icon-edit doc-edit-btn" aria-label="Edit"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path d="M2 11.6V14h2.4l7.1-7.1-2.4-2.4L2 11.6z" fill="currentColor"/><path d="M14.6 4.1a.9.9 0 0 0 0-1.3l-1.4-1.4a.9.9 0 0 0-1.3 0l-1.1 1.1 2.7 2.7 1.1-1.1z" fill="currentColor"/></svg></button>
         </span>
         <p class="enh-meta"></p>
       </span>
@@ -1027,7 +1349,7 @@ function renderDocuments() {
     card.querySelector('.enh-meta').textContent = documentMeta(doc);
     card.querySelector('.pill').textContent = KIND_LABEL[doc.kind] || doc.kind;
     card.querySelector('.chev').textContent = open ? '▾' : '▸';
-    card.title = open ? 'Click to close this document' : 'Click to open this document';
+    card.title = open ? 'Close document' : 'Open document';
 
     const toggle = () => toggleDocument(doc.id);
     card.addEventListener('click', toggle);
@@ -1039,7 +1361,7 @@ function renderDocuments() {
     });
 
     const editBtn = card.querySelector('.doc-edit-btn');
-    editBtn.title = 'Rename this document or move it to another product';
+    editBtn.title = 'Edit the title, product and content';
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation();                       // never toggles the card
       toggleDocument(doc.id, { startEditing: true });
@@ -1052,110 +1374,31 @@ function renderDocuments() {
   });
 }
 
+/* ---------------- editing a document's matter in the tool ----------------
+   The write-up is corrected here; the uploaded file is never rewritten, so
+   Download Original always hands back exactly what was uploaded. */
+
+const FORMAT_TOOLS = [
+  { label: 'B', cmd: 'bold', title: 'Bold' },
+  { label: 'I', cmd: 'italic', title: 'Italic' },
+  { label: 'U', cmd: 'underline', title: 'Underline' },
+  { label: 'Heading', cmd: 'formatBlock', arg: 'h3', title: 'Make this line a heading' },
+  { label: 'Text', cmd: 'formatBlock', arg: 'p', title: 'Make this line normal text' },
+  { label: 'Bullets', cmd: 'insertUnorderedList', title: 'Bulleted list' },
+  { label: 'Numbers', cmd: 'insertOrderedList', title: 'Numbered list' },
+  { label: 'Clear', cmd: 'removeFormat', title: 'Clear formatting' },
+];
+
 function buildDocumentPanel(doc) {
   const panel = document.createElement('div');
   panel.className = 'doc-panel';
 
-  const bar = document.createElement('div');
-  bar.className = 'doc-bar';
+  const editing = state.editingDoc === doc.id;
 
-  const label = document.createElement('span');
-  label.className = 'doc-bar-label';
-  label.textContent = doc.fileName;
-  bar.appendChild(label);
-
-  const download = document.createElement('a');
-  download.className = 'btn btn-outline doc-bar-btn';
-  download.textContent = 'Download original';
-  download.href = `/api/documents/${doc.id}/file?download=1`;
-  download.setAttribute('download', '');
-  bar.appendChild(download);
-
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'btn btn-outline doc-bar-btn';
-  close.textContent = 'Close';
-  close.addEventListener('click', () => toggleDocument(doc.id));
-  bar.appendChild(close);
-
-  const del = document.createElement('button');
-  del.type = 'button';
-  del.className = 'btn btn-danger doc-bar-btn';
-  del.textContent = 'Delete';
-  del.addEventListener('click', () => deleteDocument(doc));
-  bar.appendChild(del);
-
-  panel.appendChild(bar);
-
-  // Edit row: rename, and move the document to another product tab.
-  const editRow = document.createElement('form');
-  editRow.className = 'doc-edit';
-  editRow.hidden = state.editingDoc !== doc.id;
-
-  const nameInput = document.createElement('input');
-  nameInput.type = 'text';
-  nameInput.className = 'input';
-  nameInput.maxLength = 140;
-  nameInput.value = doc.name;
-  nameInput.setAttribute('aria-label', 'Document name');
-  editRow.appendChild(nameInput);
-
-  const productSelect = document.createElement('select');
-  productSelect.className = 'input doc-edit-product';
-  state.products.forEach((p) => {
-    const option = document.createElement('option');
-    option.value = p.key;
-    option.textContent = p.label;
-    productSelect.appendChild(option);
-  });
-  const noneOption = document.createElement('option');
-  noneOption.value = '';
-  noneOption.textContent = 'Unassigned';
-  productSelect.appendChild(noneOption);
-  productSelect.value = doc.product || '';
-  editRow.appendChild(productSelect);
-
-  const save = document.createElement('button');
-  save.type = 'submit';
-  save.className = 'btn btn-primary doc-bar-btn';
-  save.textContent = 'Save';
-  editRow.appendChild(save);
-
-  const cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.className = 'btn btn-outline doc-bar-btn';
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', () => { editRow.hidden = true; state.editingDoc = null; });
-  editRow.appendChild(cancel);
-
-  editRow.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    if (!nameInput.value.trim()) {
-      toast('The document needs a name.', true);
-      return;
-    }
-    save.disabled = true;
-    try {
-      await api(`/api/documents/${doc.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: nameInput.value, product: productSelect.value }),
-      });
-      delete state.docBodies[doc.id];
-      state.docTab = productSelect.value || 'unassigned';
-      await openDocuments({ expand: doc.id });
-      toast('Document updated.');
-    } catch (err) {
-      toast(err.message, true);
-    } finally {
-      save.disabled = false;
-    }
-  });
-
-  panel.appendChild(editRow);
-
+  /* The body is built first: the editor needs the article it acts on. */
   const body = document.createElement('div');
   body.className = 'doc-body';
+  let article = null;
 
   if (doc.kind === 'pdf') {
     const frame = document.createElement('iframe');
@@ -1173,45 +1416,181 @@ function buildDocumentPanel(doc) {
     body.appendChild(figure);
   } else {
     // .docx / .md / .txt were converted to a safe HTML subset on the server
-    const article = document.createElement('article');
-    article.className = 'doc-article';
+    article = document.createElement('article');
+    article.className = `doc-article${editing ? ' editing' : ''}`;
     article.innerHTML = doc.html || '<p class="doc-empty">This document has no readable text.</p>';
+    if (editing) {
+      article.contentEditable = 'true';
+      article.spellcheck = true;
+    }
     body.appendChild(article);
   }
 
+  const bar = document.createElement('div');
+  bar.className = 'doc-bar';
+
+  const label = document.createElement('span');
+  label.className = 'doc-bar-label';
+  label.textContent = doc.fileName;
+  bar.appendChild(label);
+
+  const download = document.createElement('a');
+  download.className = 'icon-btn-sq';
+  download.innerHTML = ICON.download;
+  download.title = 'Download the original file';
+  download.setAttribute('aria-label', 'Download the original file');
+  download.href = `/api/documents/${doc.id}/file?download=1`;
+  download.setAttribute('download', '');
+  bar.appendChild(download);
+
+  panel.appendChild(bar);
+  if (editing) panel.appendChild(buildDocumentEditor(doc, article));
   panel.appendChild(body);
   return panel;
 }
 
-async function deleteDocument(doc) {
-  if (!doc) return;
+/**
+ * One edit mode, opened by the pencil on the card: the title, the product the
+ * document belongs to and — for the kinds the tool renders as text — the matter
+ * itself, all saved together. The uploaded file is never rewritten, so Download
+ * Original still hands back exactly what was uploaded.
+ */
+function buildDocumentEditor(doc, article) {
+  const form = document.createElement('form');
+  form.className = 'doc-edit';
 
-  const yes = await askConfirm(`Delete the document "${doc.name}"?`, doc.fileName);
-  if (!yes) return;
+  const row = document.createElement('div');
+  row.className = 'doc-edit-row';
 
-  try {
-    await api(`/api/documents/${doc.id}`, { method: 'DELETE' });
-    state.openDocs.delete(doc.id);
-    delete state.docBodies[doc.id];
-    await loadProducts();
-    await openDocuments();
-    toast('Document deleted.');
-  } catch (err) {
-    toast(err.message, true);
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'input';
+  nameInput.maxLength = 140;
+  nameInput.value = doc.name;
+  nameInput.setAttribute('aria-label', 'Document title');
+  row.appendChild(nameInput);
+
+  const productSelect = document.createElement('select');
+  productSelect.className = 'input doc-edit-product';
+  state.products.forEach((p) => {
+    const option = document.createElement('option');
+    option.value = p.key;
+    option.textContent = p.label;
+    productSelect.appendChild(option);
+  });
+  const noneOption = document.createElement('option');
+  noneOption.value = '';
+  noneOption.textContent = 'Unassigned';
+  productSelect.appendChild(noneOption);
+  productSelect.value = doc.product || '';
+  row.appendChild(productSelect);
+
+  const save = document.createElement('button');
+  save.type = 'submit';
+  save.className = 'btn btn-primary doc-bar-btn';
+  save.textContent = 'Save';
+  row.appendChild(save);
+
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn btn-outline doc-bar-btn';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => {
+    state.editingDoc = null;
+    renderDocuments();               // re-renders from the stored copy, dropping the edits
+  });
+  row.appendChild(cancel);
+
+  form.appendChild(row);
+
+  // The formatting strip only appears where there is matter the tool can edit.
+  if (article) {
+    const tools = document.createElement('div');
+    tools.className = 'doc-tools';
+
+    FORMAT_TOOLS.forEach((tool) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'doc-tool';
+      btn.textContent = tool.label;
+      btn.title = tool.title;
+      // mousedown would move the caret out of the text before the command runs
+      btn.addEventListener('mousedown', (event) => event.preventDefault());
+      btn.addEventListener('click', () => {
+        article.focus();
+        document.execCommand(tool.cmd, false, tool.arg || null);
+      });
+      tools.appendChild(btn);
+    });
+
+    const note = document.createElement('span');
+    note.className = 'doc-editbar-note';
+    note.textContent = 'Edit the text below \u2014 the uploaded file is left untouched';
+    tools.appendChild(note);
+
+    form.appendChild(tools);
   }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const name = nameInput.value.trim();
+    if (!name) {
+      toast('Enter a document title.', true);
+      nameInput.focus();
+      return;
+    }
+
+    const payload = { name, product: productSelect.value };
+    if (article) {
+      const html = article.innerHTML.trim();
+      if (!html || !article.textContent.trim()) {
+        toast('The document cannot be saved empty.', true);
+        return;
+      }
+      payload.html = html;
+    }
+
+    save.disabled = true;
+    save.textContent = 'Saving\u2026';
+    try {
+      await api(`/api/documents/${doc.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      delete state.docBodies[doc.id];        // read back the copy the server stored
+      state.editingDoc = null;
+      state.docTab = productSelect.value || 'unassigned';
+      await openDocuments({ expand: doc.id });
+      toast('Document saved.');
+    } catch (err) {
+      save.disabled = false;
+      save.textContent = 'Save';
+      toast(err.message, true);
+    }
+  });
+
+  return form;
 }
 
 /* ---------------- upload dialog ---------------- */
 
 let modalMode = 'create'; // 'create' | 'reupload' | 'document'
 
+const SUBMIT_LABEL = {
+  create: 'Create Enhancement',
+  reupload: 'Upload Scenarios',
+  document: 'Upload Document',
+};
+
 const HINTS = {
   create:
-    'Both files are optional — attach either one, or both. CSV/XLSX: columns S.No and Test Scenario (extra columns are kept); serial numbers are re-generated. Document: .docx keeps its text and screenshots, PDFs open in the viewer.',
+    'Attach either file, or both. Scenarios: columns S.No and Test Scenario. Document: .docx keeps its text and screenshots; PDFs open in the viewer.',
   scenarios:
-    'Expected columns: S.No and Test Scenario. Extra columns such as Priority or Expected Result are kept and shown too. Serial numbers are re-generated so every scenario sits on its own numbered row.',
+    'Required columns: S.No and Test Scenario. Any other columns are kept. Serial numbers are regenerated.',
   document:
-    'Word documents (.docx) are shown inside the tool with their screenshots, exactly where they sit in the text. PDFs open in the built-in viewer, images show as a single screenshot, and .md/.txt are formatted as text.',
+    '.docx keeps its text and screenshots in place. PDFs open in the viewer, images show as one screenshot, and .md / .txt are formatted as text.',
 };
 
 /** Show only the fields that belong to the current dialog mode. */
@@ -1230,42 +1609,42 @@ function applyModalMode() {
   dom.modalHint.textContent = isDocument ? HINTS.document : (isCreate ? HINTS.create : HINTS.scenarios);
 
   dom.docFieldLabel.innerHTML = isDocument
-    ? 'Document file <em>(.docx, .pdf, .md, .txt, image)</em>'
-    : 'Enhancement document <em>(optional — .docx, .pdf, .md, .txt, image)</em>';
+    ? 'Document File <em>(.docx, .pdf, .md, .txt, image)</em>'
+    : 'Enhancement Document <em>(optional — .docx, .pdf, .md, .txt, image)</em>';
   dom.fileFieldLabel.innerHTML = isCreate
-    ? 'Test scenarios file <em>(optional — .csv, .xlsx, .xls)</em>'
-    : 'Test scenarios file <em>(.csv, .xlsx, .xls)</em>';
-  dom.nameFieldLabel.textContent = isDocument ? 'Document name (optional)' : 'Enhancement / feature name';
+    ? 'Test Scenarios File <em>(optional — .csv, .xlsx, .xls)</em>'
+    : 'Test Scenarios File <em>(.csv, .xlsx, .xls)</em>';
+  dom.nameFieldLabel.textContent = isDocument ? 'Document Name (optional)' : 'Enhancement / Feature Name';
 }
 
 function openCreateModal(productKey) {
   modalMode = 'create';
-  dom.modalTitle.textContent = 'New enhancement';
+  dom.modalTitle.textContent = 'New Enhancement';
   dom.modalProduct.value = productKey || state.product || (state.products[0] && state.products[0].key);
   dom.modalName.value = '';
   dom.modalDesc.value = '';
-  dom.modalSubmit.textContent = 'Create & upload';
+  dom.modalSubmit.textContent = 'Create Enhancement';
   applyModalMode();
   showModal();
 }
 
 function openReuploadModal() {
   modalMode = 'reupload';
-  dom.modalTitle.textContent = `Upload / add scenarios — ${state.enhancement.name}`;
+  dom.modalTitle.textContent = `Upload Test Scenarios — ${state.enhancement.name}`;
   dom.modalMode.value = 'replace';
-  dom.modalSubmit.textContent = 'Upload scenarios';
+  dom.modalSubmit.textContent = 'Upload Scenarios';
   applyModalMode();
   showModal();
 }
 
 function openDocumentModal() {
   modalMode = 'document';
-  dom.modalTitle.textContent = 'Upload enhancement document';
+  dom.modalTitle.textContent = 'Upload Enhancement Document';
   const tabProduct = state.docTab && state.docTab !== 'unassigned' ? state.docTab : null;
   dom.modalProduct.value = tabProduct || state.product || (state.products[0] && state.products[0].key);
   dom.modalName.value = '';
   dom.modalDesc.value = '';
-  dom.modalSubmit.textContent = 'Upload document';
+  dom.modalSubmit.textContent = 'Upload Document';
   applyModalMode();
   showModal();
 }
@@ -1296,15 +1675,15 @@ async function submitUpload(event) {
   const isDocument = modalMode === 'document';
 
   if (isDocument && !dom.modalDoc.files.length) {
-    modalError('Choose the document file (.docx, .pdf, .md, .txt or an image).');
+    modalError('Select a document file (.docx, .pdf, .md, .txt or an image).');
     return;
   }
   if (modalMode === 'reupload' && !dom.modalFile.files.length) {
-    modalError('Choose a .csv or .xlsx file of test scenarios.');
+    modalError('Select a .csv or .xlsx file of test scenarios.');
     return;
   }
   if (modalMode === 'create' && !dom.modalFile.files.length && !dom.modalDoc.files.length) {
-    modalError('Attach a test scenario file, a document, or both — at least one is needed.');
+    modalError('Attach a test scenario file, a document, or both. At least one is required.');
     return;
   }
   if (modalMode === 'create' && !dom.modalName.value.trim()) {
@@ -1345,14 +1724,14 @@ async function submitUpload(event) {
     await loadProducts();
 
     if (isDocument) {
-      toast(`Document "${result.document.name}" stored.`);
+      toast(`Document "${result.document.name}" uploaded.`);
       await openDocuments({ expand: result.document.id });
     } else {
-      const skipped = result.skipped ? `, ${result.skipped} empty row(s) skipped` : '';
-      const withDoc = result.document ? ' Document stored.' : '';
+      const skipped = result.skipped ? `, ${plural(result.skipped, 'empty row')} skipped` : '';
+      const withDoc = result.document ? ' Document uploaded.' : '';
       toast(result.imported
-        ? `${result.imported} test scenario(s) imported${skipped}.${withDoc}`
-        : `Enhancement created.${withDoc || ' Add scenarios whenever you are ready.'}`);
+        ? `${plural(result.imported, 'test scenario')} imported${skipped}.${withDoc}`
+        : `Enhancement created.${withDoc || ' Add test scenarios whenever you are ready.'}`);
 
       if (modalMode === 'create') {
         await openProduct(result.enhancement.product);
@@ -1365,33 +1744,14 @@ async function submitUpload(event) {
     modalError(err.message);
   } finally {
     dom.modalSubmit.disabled = false;
-    dom.modalSubmit.textContent = modalMode === 'create' ? 'Create & upload' : 'Upload';
-  }
-}
-
-async function deleteEnhancement() {
-  const enh = state.enhancement;
-  if (!enh) return;
-  if (!window.confirm(`Delete "${enh.name}" and its ${plural(enh.scenarios.length, 'test scenario')}?`)) return;
-
-  try {
-    await api(`/api/enhancements/${enh.id}`, { method: 'DELETE' });
-    const product = enh.product;
-    state.enhancement = null;
-    await loadProducts();
-    await openProduct(product);
-    toast('Enhancement deleted.');
-  } catch (err) {
-    toast(err.message, true);
+    dom.modalSubmit.textContent = SUBMIT_LABEL[modalMode] || 'Upload';
   }
 }
 
 /* ---------------- wiring ---------------- */
 
 el('newEnhancementBtn').addEventListener('click', () => openCreateModal(state.product));
-dom.addForProductBtn.addEventListener('click', () => openCreateModal(state.product));
 dom.reuploadBtn.addEventListener('click', openReuploadModal);
-dom.deleteBtn.addEventListener('click', deleteEnhancement);
 dom.uploadForm.addEventListener('submit', submitUpload);
 dom.addScenarioForm.addEventListener('submit', addScenarioInTool);
 dom.renameEnhancementBtn.addEventListener('click', startRename);
@@ -1402,19 +1762,16 @@ dom.documentSearch.addEventListener('input', (e) => {
   state.docFilter = e.target.value;
   renderDocuments();
 });
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.bulk')) closeActionMenu();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActionMenu(); });
+window.addEventListener('scroll', closeActionMenu, true);
+
 el('modalClose').addEventListener('click', closeModal);
 el('modalCancel').addEventListener('click', closeModal);
 dom.modal.addEventListener('click', (e) => { if (e.target === dom.modal) closeModal(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dom.modal.hidden) closeModal(); });
-
-// confirm dialog: Yes deletes, No / ✕ / Escape / backdrop all cancel
-el('confirmYes').addEventListener('click', () => settleConfirm(true));
-el('confirmNo').addEventListener('click', () => settleConfirm(false));
-el('confirmClose').addEventListener('click', () => settleConfirm(false));
-el('confirmModal').addEventListener('click', (e) => { if (e.target === el('confirmModal')) settleConfirm(false); });
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !el('confirmModal').hidden) settleConfirm(false);
-});
 
 dom.enhancementSearch.addEventListener('input', (e) => {
   state.enhFilter = e.target.value;
@@ -1425,11 +1782,198 @@ dom.scenarioSearch.addEventListener('input', (e) => {
   renderScenarios();
 });
 
+// The CloudFuze logo is dropped in at public/logo.png; without it the topbar
+// shows a wordmark instead of a broken image.
+function useBrandWordmark(img) {
+  if (!img || !img.isConnected) return;
+  const mark = document.createElement('span');
+  mark.className = 'brand-word';
+  mark.textContent = 'CloudFuze';
+  img.replaceWith(mark);
+}
+
+(function brandLogoFallback() {
+  const img = el('brandLogo');
+  if (!img) return;
+  img.addEventListener('error', () => useBrandWordmark(img));
+  // the 404 can land before this script runs, so check the finished state too
+  if (img.complete && img.naturalWidth === 0) useBrandWordmark(img);
+})();
+
+/* ---------------- the in-tool assistant ----------------
+   Answers questions about this tool's own data. The server assembles the
+   context from the store on every turn, so replies track the current rows. */
+
+const bot = {
+  open: false,
+  busy: false,
+  history: [],          // {role, content} pairs sent back for follow-up questions
+  position: null,       // where the user dragged the panel to
+  greeted: false,
+};
+
+const BOT_SUGGESTIONS = [
+  'How many scenarios have failed?',
+  'What is the Group DM Name Migration about?',
+  'Which enhancements have no test cases yet?',
+];
+
+function botBubble(role, text, extraClass = '') {
+  const row = document.createElement('div');
+  row.className = `bot-msg is-${role} ${extraClass}`.trim();
+  const bubble = document.createElement('div');
+  bubble.className = 'bot-bubble';
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  el('botLog').appendChild(row);
+  el('botLog').scrollTop = el('botLog').scrollHeight;
+  return row;
+}
+
+/** First open: say what it can do, and offer a few one-tap questions. */
+function botGreet() {
+  if (bot.greeted) return;
+  bot.greeted = true;
+
+  botBubble('bot', 'Hello. Ask me anything about the scenarios, results or documents in this tool.');
+
+  const chips = document.createElement('div');
+  chips.className = 'bot-chips';
+  BOT_SUGGESTIONS.forEach((text) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'bot-chip';
+    chip.textContent = text;
+    chip.addEventListener('click', () => {
+      chips.remove();
+      askBot(text);
+    });
+    chips.appendChild(chip);
+  });
+  el('botLog').appendChild(chips);
+}
+
+function toggleBot(force) {
+  bot.open = typeof force === 'boolean' ? force : !bot.open;
+  el('botPanel').hidden = !bot.open;
+  el('botLauncher').setAttribute('aria-expanded', bot.open ? 'true' : 'false');
+  el('botLauncher').classList.toggle('is-open', bot.open);
+  if (bot.open) {
+    botGreet();
+    setTimeout(() => el('botInput').focus(), 40);
+  }
+}
+
+async function askBot(question) {
+  const text = String(question || '').trim();
+  if (!text || bot.busy) return;
+
+  bot.busy = true;
+  el('botSend').disabled = true;
+  el('botInput').value = '';
+  botBubble('user', text);
+
+  const thinking = botBubble('bot', 'Looking through the tool\u2026', 'is-thinking');
+
+  try {
+    const result = await api('/api/assistant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: text, history: bot.history }),
+    });
+
+    thinking.remove();
+    botBubble('bot', result.answer);
+    bot.history.push({ role: 'user', content: text });
+    bot.history.push({ role: 'assistant', content: result.answer });
+    bot.history = bot.history.slice(-8);
+  } catch (err) {
+    thinking.remove();
+    botBubble('bot', err.message, 'is-error');
+  } finally {
+    bot.busy = false;
+    el('botSend').disabled = false;
+    el('botInput').focus();
+  }
+}
+
+/* The panel can be dragged anywhere by its header, so it never sits on top of
+   the row you are reading. Where you leave it is remembered for the session. */
+function makeBotDraggable() {
+  const panel = el('botPanel');
+  const handle = el('botHead');
+  let startX = 0;
+  let startY = 0;
+  let originX = 0;
+  let originY = 0;
+  let dragging = false;
+
+  const place = (x, y) => {
+    const rect = panel.getBoundingClientRect();
+    const maxX = window.innerWidth - rect.width - 8;
+    const maxY = window.innerHeight - rect.height - 8;
+    const left = Math.min(Math.max(8, x), Math.max(8, maxX));
+    const top = Math.min(Math.max(8, y), Math.max(8, maxY));
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+    bot.position = { left, top };
+  };
+
+  const onMove = (event) => {
+    if (!dragging) return;
+    event.preventDefault();
+    place(originX + (event.clientX - startX), originY + (event.clientY - startY));
+  };
+
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    panel.classList.remove('is-dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+
+  handle.addEventListener('mousedown', (event) => {
+    if (event.target.closest('#botClose')) return;   // the X is not a drag handle
+    const rect = panel.getBoundingClientRect();
+    startX = event.clientX;
+    startY = event.clientY;
+    originX = rect.left;
+    originY = rect.top;
+    dragging = true;
+    panel.classList.add('is-dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    event.preventDefault();
+  });
+
+  // keep it on screen when the window changes size
+  window.addEventListener('resize', () => {
+    if (bot.position) place(bot.position.left, bot.position.top);
+  });
+}
+
+makeBotDraggable();
+
+el('botLauncher').addEventListener('click', () => toggleBot());
+el('botClose').addEventListener('click', () => toggleBot(false));
+el('botForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  askBot(el('botInput').value);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && bot.open) toggleBot(false);
+});
+
 (async function init() {
   try {
     await loadProducts();
-    resetToDashboard();
+    const route = hashToRoute(location.hash);
+    history.replaceState(route, '', routeToHash(route));
+    await applyRoute(route);
   } catch (err) {
-    toast(`Could not reach the server: ${err.message}`, true);
+    toast(`Unable to reach the server: ${err.message}`, true);
   }
 })();
