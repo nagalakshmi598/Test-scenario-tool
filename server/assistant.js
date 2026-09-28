@@ -51,25 +51,41 @@ Rules:
 
 const SYSTEM_DRAFT = `You are a senior QA engineer on CloudFuze, a cloud data
 migration product. Teams migrate chat, mail and content between Slack, Microsoft
-Teams, Google Chat, Google Drive and similar clouds.
+Teams, Google Chat, Google Drive, SharePoint and similar clouds.
 
-The user names a feature and wants test scenarios for it. Draft them.
+The user describes a feature and wants test scenarios for it. Draft them.
+
+Shape of the answer:
+- Group the scenarios into short sections, one per dimension of the feature.
+  Put the section name on its own line, then its scenarios under it.
+  A section name is a few words, optionally with the limit in brackets —
+  for example "User limit (3 users)", "Name preservation", "Permissions".
+- Number the scenarios continuously across the whole answer, 1, 2, 3 …
+- One line each, starting "Verify that ", one check per line, concrete enough
+  that a tester can carry it out and get a yes or no.
+
+What to cover:
+- The happy path first, then the negative and edge cases for each section —
+  the negatives are the point, so give them at least half the lines.
+- What moves and what must survive it: names, content, order, timestamps,
+  formatting, attachments.
+- Who sees it afterwards: mapped and unmapped users, membership, permissions,
+  guests and external users.
+- Awkward input: special characters, emojis, maximum lengths, empty, very
+  large, duplicates, case differences and aliases.
+- Limits and quotas the user mentions — test the boundary, one under and one
+  over, and the ways someone might try to get around them.
+- The edges: re-running a migration, running two at once, deleting and
+  retrying, partial failure, and the source being left untouched.
 
 Rules:
-- Write 8 to 12 scenarios, each on its own numbered line, each starting
-  "Verify that ".
-- One check per scenario, concrete and verifiable by a tester.
-- Cover the shape of a migration: what moves, what must survive the move
-  (names, content, order, timestamps, formatting), who can see it afterwards
-  (mapped and unmapped users, membership, permissions), the awkward inputs
-  (special characters, emojis, maximum lengths, empty and very large cases),
-  and the edges (re-running a migration, partial failure, the source being
-  left untouched).
+- If the user states a limit, a behaviour or a rule, test exactly that. Do not
+  soften it or invent a different one.
 - The CONTEXT below is the team's existing scenarios and write-ups. Match their
   wording and level of detail, and do not repeat a scenario already there.
-- If the CONTEXT documents this feature, draft only from what it states.
-- Plain text only. No headings, no code fences, no commentary before or after
-  the numbered list.`;
+- 12 to 20 scenarios unless the feature is small.
+- Plain text only. No markdown, no bold, no bullets, no code fences, and no
+  commentary before or after the list.`;
 
 /** Strip tags so a document's matter reads as plain text, one block per line. */
 function toPlainText(html) {
@@ -192,7 +208,7 @@ async function callAnthropic({ model, context, question, history, system = SYSTE
 
   const message = await client.messages.create({
     model,
-    max_tokens: 1600,
+    max_tokens: 2400,
     system: `${system}\n\n=== CONTEXT ===\n${context}`,
     messages: [...history, { role: 'user', content: question }],
   });
@@ -375,8 +391,10 @@ async function draftScenarios(q, data) {
   const feature = featureOf(q);
   const terms = keyTerms(feature);
 
-  // a description, not just a name: the model can draft for it directly
-  if (feature.split(/\s+/).length >= 12 && activeProvider().ready) return null;
+  /* A model groups the checks and adds the negative cases a write-up never
+     states, so it drafts whenever one is reachable — the write-ups reach it
+     in context either way. Mining them here is the offline fallback. */
+  if (activeProvider().ready) return null;
   if (!terms.length) {
     return 'Tell me the feature and I will draft scenarios from the write-ups, for example: "scenarios for group DM name migration".';
   }
@@ -923,12 +941,19 @@ async function askAssistant({ question, history = [] }) {
       ? await callOpenAi({ model, context, question: text, history: trimmed, system })
       : await callAnthropic({ model, context, question: text, history: trimmed, system });
 
-    if (!answer.trim()) {
+    // models leave markdown line-break spaces that do nothing in a chat bubble
+    const tidy = answer
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+$/, ''))
+      .join('\n')
+      .trim();
+
+    if (!tidy) {
       const err = new Error('No answer came back; try again.');
       err.status = 502;
       throw err;
     }
-    return { answer: answer.trim(), model, provider };
+    return { answer: tidy, model, provider };
   } catch (apiErr) {
     const fallback = scenarioFallback(text);
     if (fallback) return { answer: fallback, model: 'built-in', provider: 'local' };
