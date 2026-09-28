@@ -24,7 +24,7 @@ const SCENARIO_EXT = new Set(['.csv', '.txt', '.xlsx', '.xls', '.xlsm']);
 const DOCUMENT_EXT = new Set(DOC_EXT);
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-store.load();
+
 
 /* Two kinds of upload: the scenario sheet, and the enhancement document.
    The "file" field is always the sheet, "document" is always the write-up. */
@@ -106,14 +106,14 @@ function keepOriginal(id, file) {
   return stored;
 }
 
-app.get('/api/products', wrap((req, res) => {
-  res.json({ products: store.listProducts(), documentCount: store.countDocuments() });
+app.get('/api/products', wrap(async (req, res) => {
+  res.json({ products: (await store.listProducts()), documentCount: (await store.countDocuments()) });
 }));
 
-app.get('/api/products/:product/enhancements', wrap((req, res) => {
+app.get('/api/products/:product/enhancements', wrap(async (req, res) => {
   const { product } = req.params;
   if (!store.isProduct(product)) return res.status(404).json({ error: 'Unknown product.' });
-  res.json({ product, enhancements: store.listEnhancements(product) });
+  res.json({ product, enhancements: (await store.listEnhancements(product)) });
 }));
 
 // New enhancement: test scenario sheet, and optionally the enhancement document.
@@ -128,7 +128,7 @@ app.post('/api/enhancements', enhancementUpload, wrap(async (req, res) => {
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Enhancement / feature name is required.' });
   }
-  if (store.findByName(product, name)) {
+  if ((await store.findByName(product, name))) {
     return res.status(409).json({ error: `"${name.trim()}" already exists for this product.` });
   }
   if (!sheet && !docFile) {
@@ -148,14 +148,14 @@ app.post('/api/enhancements', enhancementUpload, wrap(async (req, res) => {
     }));
   }
 
-  const created = store.createEnhancement({
+  const created = (await store.createEnhancement({
     product,
     name,
     description,
     sourceFile: sheet ? decodeFileName(sheet.originalname) : '',
     scenarios,
     extraColumns,
-  });
+  }));
   if (sheet) keepOriginal(created.id, sheet);
 
   let document = null;
@@ -178,15 +178,15 @@ app.post('/api/enhancements', enhancementUpload, wrap(async (req, res) => {
   });
 }));
 
-app.get('/api/enhancements/:id', wrap((req, res) => {
-  const enhancement = store.getEnhancement(req.params.id);
+app.get('/api/enhancements/:id', wrap(async (req, res) => {
+  const enhancement = (await store.getEnhancement(req.params.id));
   if (!enhancement) return res.status(404).json({ error: 'Enhancement not found.' });
-  res.json({ enhancement, documents: store.documentsForEnhancement(enhancement.id) });
+  res.json({ enhancement, documents: (await store.documentsForEnhancement(enhancement.id)) });
 }));
 
 // Re-upload scenarios for an existing enhancement (replace or append).
-app.post('/api/enhancements/:id/scenarios', upload.single('file'), wrap((req, res) => {
-  const enhancement = store.getEnhancement(req.params.id);
+app.post('/api/enhancements/:id/scenarios', upload.single('file'), wrap(async (req, res) => {
+  const enhancement = (await store.getEnhancement(req.params.id));
   if (!enhancement) return res.status(404).json({ error: 'Enhancement not found.' });
   if (!req.file) return res.status(400).json({ error: 'Attach a .csv or .xlsx file of test scenarios.' });
 
@@ -195,20 +195,20 @@ app.post('/api/enhancements/:id/scenarios', upload.single('file'), wrap((req, re
     splitLines: truthy(req.body.splitLines),
   });
 
-  const updated = store.setScenarios(enhancement.id, {
+  const updated = (await store.setScenarios(enhancement.id, {
     scenarios,
     extraColumns,
     sourceFile: decodeFileName(req.file.originalname),
     mode,
-  });
+  }));
   keepOriginal(enhancement.id, req.file);
 
   res.json({ enhancement: updated, imported: scenarios.length, skipped, mode });
 }));
 
 // Add a single scenario typed in the tool (no CSV) — appended after the last row.
-app.post('/api/enhancements/:id/scenario', wrap((req, res) => {
-  const enhancement = store.getEnhancement(req.params.id);
+app.post('/api/enhancements/:id/scenario', wrap(async (req, res) => {
+  const enhancement = (await store.getEnhancement(req.params.id));
   if (!enhancement) return res.status(404).json({ error: 'Enhancement not found.' });
 
   const { scenario, extra } = req.body || {};
@@ -219,13 +219,13 @@ app.post('/api/enhancements/:id/scenario', wrap((req, res) => {
     return res.status(400).json({ error: 'The test scenario is too long (2,000 characters maximum).' });
   }
 
-  const updated = store.addScenario(enhancement.id, { scenario, extra });
+  const updated = (await store.addScenario(enhancement.id, { scenario, extra }));
   res.status(201).json({ enhancement: updated, sno: updated.scenarios.length });
 }));
 
 // Generate (or re-generate) detailed test cases for one scenario, via Claude.
 app.post('/api/enhancements/:id/scenarios/:sno/testcases', wrap(async (req, res) => {
-  const enhancement = store.getEnhancement(req.params.id);
+  const enhancement = (await store.getEnhancement(req.params.id));
   if (!enhancement) return res.status(404).json({ error: 'Enhancement not found.' });
 
   const sno = Number(req.params.sno);
@@ -245,7 +245,7 @@ app.post('/api/enhancements/:id/scenarios/:sno/testcases', wrap(async (req, res)
     sno,
   });
 
-  store.setTestCases(enhancement.id, sno, generated);
+  (await store.setTestCases(enhancement.id, sno, generated));
   res.status(201).json({
     sno,
     testCases: generated.testCases,
@@ -261,7 +261,7 @@ async function storeDocument({ name, description, product, enhancementId, file }
   const fileName = decodeFileName(file.originalname);
   const ingested = await ingestDocument({ id, buffer: file.buffer, originalName: fileName });
 
-  return store.createDocument({
+  return (await store.createDocument({
     id,
     name: name.trim(),
     description: (description || '').trim(),
@@ -269,11 +269,11 @@ async function storeDocument({ name, description, product, enhancementId, file }
     enhancementId: enhancementId || '',
     fileName,
     ...ingested,
-  });
+  }));
 }
 
-app.get('/api/documents', wrap((req, res) => {
-  res.json({ documents: store.listDocuments() });
+app.get('/api/documents', wrap(async (req, res) => {
+  res.json({ documents: (await store.listDocuments()) });
 }));
 
 app.post('/api/documents', uploadDocument.single('file'), wrap(async (req, res) => {
@@ -288,15 +288,15 @@ app.post('/api/documents', uploadDocument.single('file'), wrap(async (req, res) 
   res.status(201).json({ document: store.documentSummary(doc) });
 }));
 
-app.get('/api/documents/:id', wrap((req, res) => {
-  const doc = store.getDocument(req.params.id);
+app.get('/api/documents/:id', wrap(async (req, res) => {
+  const doc = (await store.getDocument(req.params.id));
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
   res.json({ document: doc });
 }));
 
 // The stored file itself: PDFs render in the browser viewer, images as <img>.
-app.get('/api/documents/:id/file', wrap((req, res) => {
-  const doc = store.getDocument(req.params.id);
+app.get('/api/documents/:id/file', wrap(async (req, res) => {
+  const doc = (await store.getDocument(req.params.id));
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
   const file = documentFilePath(doc.id, doc.storedFile);
@@ -310,8 +310,8 @@ app.get('/api/documents/:id/file', wrap((req, res) => {
 }));
 
 // Screenshots pulled out of a .docx.
-app.get('/api/documents/:id/assets/:asset', wrap((req, res) => {
-  const doc = store.getDocument(req.params.id);
+app.get('/api/documents/:id/assets/:asset', wrap(async (req, res) => {
+  const doc = (await store.getDocument(req.params.id));
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
   const file = documentFilePath(doc.id, req.params.asset);
@@ -320,8 +320,8 @@ app.get('/api/documents/:id/assets/:asset', wrap((req, res) => {
 }));
 
 // Rename a document, move it to another product tab, or correct its matter.
-app.patch('/api/documents/:id', wrap((req, res) => {
-  const doc = store.getDocument(req.params.id);
+app.patch('/api/documents/:id', wrap(async (req, res) => {
+  const doc = (await store.getDocument(req.params.id));
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
   const { name, description, product, html } = req.body || {};
@@ -348,28 +348,28 @@ app.patch('/api/documents/:id', wrap((req, res) => {
     matter = sanitizeHtml(html);
   }
 
-  const updated = store.updateDocument(doc.id, { name, description, product, html: matter });
+  const updated = (await store.updateDocument(doc.id, { name, description, product, html: matter }));
   res.json({ document: store.documentSummary(updated) });
 }));
 
-app.delete('/api/documents/:id', wrap((req, res) => {
-  const doc = store.getDocument(req.params.id);
+app.delete('/api/documents/:id', wrap(async (req, res) => {
+  const doc = (await store.getDocument(req.params.id));
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
-  store.deleteDocument(doc.id);
+  (await store.deleteDocument(doc.id));
   removeDocumentFiles(doc.id);
   res.status(204).end();
 }));
 
 // Is a Claude key configured? Lets the UI explain itself before you click.
-app.get('/api/ai-status', wrap((req, res) => {
+app.get('/api/ai-status', wrap(async (req, res) => {
   const { provider, model } = activeProvider();
   res.json({ ready: hasApiKey(), provider, model, problem: keyProblem() });
 }));
 
 // Delete a single scenario row by its serial number.
 // Mark one scenario passed, failed, or not yet run.
-app.patch('/api/enhancements/:id/scenarios/:sno/status', wrap((req, res) => {
+app.patch('/api/enhancements/:id/scenarios/:sno/status', wrap(async (req, res) => {
   const { status } = req.body || {};
   if (!store.SCENARIO_STATUS.includes(status)) {
     return res.status(400).json({ error: 'Status must be pass, fail or pending.' });
@@ -380,50 +380,50 @@ app.patch('/api/enhancements/:id/scenarios/:sno/status', wrap((req, res) => {
     return res.status(400).json({ error: 'Invalid scenario number.' });
   }
 
-  const result = store.setScenarioStatus(req.params.id, sno, status);
+  const result = (await store.setScenarioStatus(req.params.id, sno, status));
   if (result.status === 'no-enhancement') return res.status(404).json({ error: 'Enhancement not found.' });
   if (result.status === 'no-scenario') return res.status(404).json({ error: `Test scenario ${sno} no longer exists.` });
 
   res.json({ enhancement: result.enhancement });
 }));
 
-app.delete('/api/enhancements/:id/scenarios/:sno', wrap((req, res) => {
+app.delete('/api/enhancements/:id/scenarios/:sno', wrap(async (req, res) => {
   const sno = Number(req.params.sno);
   if (!Number.isInteger(sno) || sno < 1) {
     return res.status(400).json({ error: 'Invalid scenario number.' });
   }
 
-  const result = store.deleteScenario(req.params.id, sno);
+  const result = (await store.deleteScenario(req.params.id, sno));
   if (result.status === 'no-enhancement') return res.status(404).json({ error: 'Enhancement not found.' });
   if (result.status === 'no-scenario') return res.status(404).json({ error: `Test scenario ${sno} no longer exists.` });
 
   res.json({ enhancement: result.enhancement, removed: result.removed });
 }));
 
-app.patch('/api/enhancements/:id', wrap((req, res) => {
+app.patch('/api/enhancements/:id', wrap(async (req, res) => {
   const { name, description } = req.body || {};
-  const enhancement = store.getEnhancement(req.params.id);
+  const enhancement = (await store.getEnhancement(req.params.id));
   if (!enhancement) return res.status(404).json({ error: 'Enhancement not found.' });
 
   if (name && name.trim()) {
-    const clash = store.findByName(enhancement.product, name);
+    const clash = (await store.findByName(enhancement.product, name));
     if (clash && clash.id !== enhancement.id) {
       return res.status(409).json({ error: `"${name.trim()}" already exists for this product.` });
     }
   }
-  res.json({ enhancement: store.summary(store.updateEnhancement(enhancement.id, { name, description })) });
+  res.json({ enhancement: store.summary((await store.updateEnhancement(enhancement.id, { name, description }))) });
 }));
 
-app.delete('/api/enhancements/:id', wrap((req, res) => {
-  if (!store.deleteEnhancement(req.params.id)) {
+app.delete('/api/enhancements/:id', wrap(async (req, res) => {
+  if (!(await store.deleteEnhancement(req.params.id))) {
     return res.status(404).json({ error: 'Enhancement not found.' });
   }
   res.status(204).end();
 }));
 
 // Download the stored scenarios back as a clean CSV.
-app.get('/api/enhancements/:id/export.csv', wrap((req, res) => {
-  const enhancement = store.getEnhancement(req.params.id);
+app.get('/api/enhancements/:id/export.csv', wrap(async (req, res) => {
+  const enhancement = (await store.getEnhancement(req.params.id));
   if (!enhancement) return res.status(404).json({ error: 'Enhancement not found.' });
 
   const cell = (value) => {

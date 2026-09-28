@@ -96,8 +96,8 @@ function statusOf(scenario) {
  * Everything in the tool, flattened into text the model can read.
  * Built fresh per question so the answers track the current data.
  */
-function buildContext() {
-  const products = store.listProducts();
+async function buildContext() {
+  const products = (await store.listProducts());
   const lines = [];
 
   lines.push('=== PRODUCTS ===');
@@ -112,12 +112,10 @@ function buildContext() {
   let shown = 0;
   let hidden = 0;
 
-  products.forEach((product) => {
-    const enhancements = store.listEnhancements(product.key);
-    enhancements.forEach((summary) => {
-      const enhancement = store.getEnhancement(summary.id);
-      if (!enhancement) return;
+  const allEnhancements = await store.allEnhancements();
 
+  products.forEach((product) => {
+    allEnhancements.filter((e) => e.product === product.key).forEach((enhancement) => {
       const scenarios = enhancement.scenarios || [];
       const counts = { pass: 0, fail: 0, pending: 0 };
       scenarios.forEach((s) => { counts[statusOf(s)] += 1; });
@@ -150,12 +148,10 @@ function buildContext() {
   if (hidden) lines.push('', `(${hidden} further scenarios not listed here.)`);
 
   lines.push('', '=== ENHANCEMENT DOCUMENTS ===');
-  const documents = store.listDocuments();
+  const documents = await store.allDocuments();
   if (!documents.length) lines.push('No documents uploaded.');
 
-  documents.forEach((summary) => {
-    const doc = store.getDocument(summary.id);
-    if (!doc) return;
+  documents.forEach((doc) => {
     const product = products.find((p) => p.key === doc.product);
     const text = toPlainText(doc.html);
     lines.push('');
@@ -373,7 +369,7 @@ function checklistFor(feature) {
 /**
  * @returns {string|null} a numbered draft, or null when this is not that kind of question
  */
-function draftScenarios(q, data) {
+async function draftScenarios(q, data) {
   if (!isDraftRequest(q)) return null;
 
   const feature = featureOf(q);
@@ -389,9 +385,8 @@ function draftScenarios(q, data) {
      matching only those says nothing about the topic. Work out which of the
      question's words actually narrow things down, and insist on one of them. */
   const bodies = [];
-  data.documents.forEach((summary) => {
-    const doc = store.getDocument(summary.id);
-    if (doc && doc.html) bodies.push({ name: doc.name, text: toPlainText(doc.html) });
+  data.documents.forEach((doc) => {
+    if (doc.html) bodies.push({ name: doc.name, text: toPlainText(doc.html) });
   });
 
   const docFreq = {};
@@ -547,15 +542,14 @@ function dedupe(sentences) {
  * Passages from the write-ups that answer the question.
  * @returns {string|null}
  */
-function searchDocuments(q, documents) {
+async function searchDocuments(q, documents) {
   const terms = keyTerms(q);
   if (terms.length < 2) return null;
 
   const perDoc = [];
 
-  documents.forEach((summary) => {
-    const doc = store.getDocument(summary.id);
-    if (!doc || !doc.html) return;
+  documents.forEach((doc) => {
+    if (!doc.html) return;
 
     const text = toPlainText(doc.html);
     if (!text) return;
@@ -604,14 +598,14 @@ function searchDocuments(q, documents) {
 }
 
 /** Everything flattened once, so the matchers below can just read it. */
-function snapshot() {
-  const products = store.listProducts();
+async function snapshot() {
+  const products = (await store.listProducts());
   const enhancements = [];
 
+  const all = await store.allEnhancements();
+
   products.forEach((product) => {
-    store.listEnhancements(product.key).forEach((summary) => {
-      const full = store.getEnhancement(summary.id);
-      if (!full) return;
+    all.filter((e) => e.product === product.key).forEach((full) => {
       const scenarios = full.scenarios || [];
       enhancements.push({
         id: full.id,
@@ -627,7 +621,7 @@ function snapshot() {
     });
   });
 
-  return { products, enhancements, documents: store.listDocuments() };
+  return { products, enhancements, documents: await store.allDocuments() };
 }
 
 function plural(n, word) {
@@ -683,11 +677,11 @@ function listScenarioLines(groups, filter, limit = 12) {
 /**
  * @returns {string|null} an answer, or null to let the model handle it.
  */
-function answerLocally(question) {
+async function answerLocally(question) {
   const q = String(question).toLowerCase().trim();
   if (!q) return null;
 
-  const data = snapshot();
+  const data = await snapshot();
   const { products, enhancements, documents } = data;
   const product = findProduct(q, products);
   const enhancement = findEnhancement(q, enhancements);
@@ -727,8 +721,7 @@ function answerLocally(question) {
   const namedDoc = findDocument(q, documents);
   if (namedDoc && !mentionsScenario(q)
       && /about|summar|say|contain|explain|what is|what's|tell me|describe/.test(q)) {
-    const full = store.getDocument(namedDoc.id);
-    const text = toPlainText(full && full.html);
+    const text = toPlainText(namedDoc.html);
     if (!text) {
       return `"${namedDoc.name}" has no readable text in the tool — it is a ${namedDoc.kind}. Open it to view the file.`;
     }
@@ -740,8 +733,7 @@ function answerLocally(question) {
     const doc = findDocument(q, documents);
 
     if (doc && /about|summar|say|contain|explain|what is|what's|tell me/.test(q)) {
-      const full = store.getDocument(doc.id);
-      const text = toPlainText(full && full.html);
+      const text = toPlainText(doc.html);
       if (!text) return `"${doc.name}" has no readable text in the tool — it is a ${doc.kind}. Open it to view the file.`;
       const excerpt = text.slice(0, 600);
       return `"${doc.name}" (${doc.imageCount || 0} screenshots):\n\n${excerpt}${text.length > 600 ? '…' : ''}`;
@@ -863,7 +855,7 @@ function answerLocally(question) {
   if (isDraftRequest(q)) return draftScenarios(q, data);
 
   /* ---- a feature question: read the write-ups ---- */
-  const fromDocs = searchDocuments(q, documents);
+  const fromDocs = await searchDocuments(q, documents);
   if (fromDocs) return fromDocs;
 
   /* ---- last resort before the model: any scenario mentioning these words ---- */
@@ -906,7 +898,7 @@ async function askAssistant({ question, history = [] }) {
 
   // Structured questions are answered from the store: exact, instant, and
   // independent of any API key or its billing state.
-  const direct = answerLocally(text);
+  const direct = await answerLocally(text);
   if (direct) return { answer: direct, model: 'built-in', provider: 'local' };
 
   const { provider, model, ready } = activeProvider();
@@ -922,7 +914,7 @@ async function askAssistant({ question, history = [] }) {
     .slice(-MAX_HISTORY)
     .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_QUESTION) }));
 
-  const context = buildContext();
+  const context = await buildContext();
   // a drafting request only reaches here when no write-up covered the feature
   const system = scenarioFallback(text) ? SYSTEM_DRAFT : SYSTEM;
 

@@ -54,6 +54,41 @@ Dashboard
 - **Search** — filter enhancements, filter scenarios inside one enhancement, or filter documents
   within the active tab.
 
+## Database
+
+The tool stores everything in MongoDB. Put the connection string in `.env` in this folder:
+
+```
+# Atlas:        mongodb+srv://user:pass@cluster.mongodb.net
+# Local server: mongodb://127.0.0.1:27017
+MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net
+
+# optional — defaults to the database named in the URI, else cf_test_scenarios
+MONGODB_DB=cf_test_scenarios
+```
+
+Two collections:
+
+| Collection | Holds |
+|---|---|
+| `enhancements` | One per enhancement, with its scenarios embedded — they are always read and written together |
+| `documents` | One per uploaded write-up, with its rendered HTML |
+
+The uploaded files themselves (the .docx/.pdf and the screenshots pulled out of them) stay on
+disk under `server/uploads/`; only their metadata and rendered text live in the database.
+
+### Coming from the old JSON store
+
+Earlier versions kept everything in `server/data/db.json`. To move that into MongoDB, set
+`MONGODB_URI` and run once:
+
+```
+node server/migrate.js
+```
+
+It refuses to run if the collections already hold data — pass `--replace` to overwrite them.
+`db.json` is left untouched, so keep it until you are happy the migration worked.
+
 ## AI key for the Test Cases button (OpenAI or Claude)
 
 Everything else works without a key. To generate test cases, copy `.env.example` to `.env` in this
@@ -70,8 +105,8 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 
 Whichever key is present is used. If both are set OpenAI wins; `AI_PROVIDER=openai` or
 `AI_PROVIDER=anthropic` forces one. `GET /api/ai-status` reports the active provider and model,
-and each generated panel shows the model that produced it. Results are cached in
-`server/data/db.json`, so re-opening a panel costs nothing.
+and each generated panel shows the model that produced it. Results are cached on the
+scenario row in MongoDB, so re-opening a panel costs nothing.
 
 A key set as a Windows environment variable also works and takes priority over `.env`.
 `.env` holds a live secret — do not commit or share it.
@@ -103,8 +138,9 @@ See [samples/sample-test-scenarios.csv](samples/sample-test-scenarios.csv) for t
 | `server/parse.js` | CSV (RFC 4180) + XLSX reader, scenario normalisation |
 | `server/documents.js` | Document intake: .docx to HTML + screenshot extraction, PDF/image/text |
 | `server/testcases.js` | OpenAI / Claude call that turns a scenario into detailed test cases |
-| `server/store.js` | JSON-file storage, product definitions |
-| `server/data/db.json` | Your data (enhancements + scenarios) |
+| `server/store.js` | MongoDB data access, product definitions |
+| `server/db.js` | MongoDB connection and indexes |
+| `server/migrate.js` | One-off import of the old `db.json` into MongoDB |
 | `server/uploads/` | Original uploaded scenario sheets |
 | `server/uploads/docs/` | Uploaded documents and the screenshots pulled out of them |
 | `public/` | Dashboard UI (plain HTML/CSS/JS — no build step) |
@@ -135,7 +171,7 @@ See [samples/sample-test-scenarios.csv](samples/sample-test-scenarios.csv) for t
 
 ## Notes
 
-- Storage is a JSON file, which suits a single-user internal tool. If several QA engineers
-  will use one shared instance at the same time, move `server/store.js` onto a database
-  (SQLite/Mongo) — the rest of the code does not change.
+- Storage is MongoDB, so several QA engineers can share one instance. Every write goes
+  straight to the database rather than through an in-process copy, so two servers pointed at
+  the same database will not overwrite each other.
 - There is no authentication; run it on your machine or behind an internal network.
