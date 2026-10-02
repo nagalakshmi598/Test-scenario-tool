@@ -442,10 +442,70 @@ app.get('/api/enhancements/:id/export.csv', wrap(async (req, res) => {
   res.send(`\uFEFF${lines.join('\r\n')}\r\n`);
 }));
 
+// Keep scenarios the assistant drafted. This is the same thing a CSV upload
+// does — the rows just arrive from the chat instead of a file. A name that
+// already exists gets the rows appended rather than a second enhancement.
+app.post('/api/assistant/scenarios', wrap(async (req, res) => {
+  const { product, name, scenarios, description } = req.body || {};
+
+  if (!store.isProduct(product)) {
+    return res.status(400).json({ error: 'Pick a product for these scenarios.' });
+  }
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Give the enhancement a name.' });
+  }
+  if (!Array.isArray(scenarios) || !scenarios.length) {
+    return res.status(400).json({ error: 'There are no scenarios to save.' });
+  }
+  if (scenarios.length > 200) {
+    return res.status(400).json({ error: 'That is more than 200 scenarios; split it up.' });
+  }
+
+  const rows = scenarios
+    .map((row) => (typeof row === 'string' ? { scenario: row } : row || {}))
+    .filter((row) => typeof row.scenario === 'string' && row.scenario.trim())
+    .map((row) => ({
+      scenario: row.scenario.trim().slice(0, 2000),
+      sourceSno: '',
+      extra: row.section ? { Section: String(row.section).slice(0, 120) } : {},
+      addedByAssistant: true,
+    }));
+
+  if (!rows.length) return res.status(400).json({ error: 'There are no scenarios to save.' });
+
+  const extraColumns = rows.some((r) => r.extra.Section) ? ['Section'] : [];
+  const existing = await store.findByName(product, name);
+
+  if (existing) {
+    const updated = await store.setScenarios(existing.id, {
+      scenarios: rows,
+      extraColumns,
+      sourceFile: existing.sourceFile || 'Drafted in the assistant',
+      mode: 'append',
+    });
+    return res.json({
+      enhancement: store.summary(updated),
+      added: rows.length,
+      appended: true,
+    });
+  }
+
+  const created = await store.createEnhancement({
+    product,
+    name: String(name).trim(),
+    description: (description || 'Drafted in the assistant').trim(),
+    sourceFile: 'Drafted in the assistant',
+    scenarios: rows,
+    extraColumns,
+  });
+
+  res.status(201).json({ enhancement: store.summary(created), added: rows.length, appended: false });
+}));
+
 // The in-tool assistant: answers questions about what this tool holds.
 app.post('/api/assistant', wrap(async (req, res) => {
-  const { question, history } = req.body || {};
-  const result = await askAssistant({ question, history });
+  const { question, history, currentProduct } = req.body || {};
+  const result = await askAssistant({ question, history, currentProduct });
   res.json(result);
 }));
 

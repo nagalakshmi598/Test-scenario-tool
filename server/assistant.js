@@ -292,6 +292,11 @@ function featureOf(q) {
   const tidy = (s) => s
     .replace(/^\s*(this|that|the|a|an|our|my)\s+(new\s+)?feature\b/i, '')
     .replace(/^\s*(new\s+)?feature\b/i, '')
+    // qualifiers that describe the request rather than the feature
+    .replace(/[,\s]*\b(?:with|including|include|plus|and|also|add)\b\s*(?:the\s+)?(?:some\s+)?negative\b.*$/i, '')
+    .replace(/[,\s]*\b(?:with|including|include)\b\s*(?:the\s+)?(?:edge|boundary|corner)\s*cases?\b.*$/i, '')
+    .replace(/[,\s]*\b(?:and|then)?\s*(?:add|save|upload|put|store)\s+(?:them|it|these|this)\b.*$/i, '')
+    .replace(/[\s:,\-]*\b(?:with|and|including|for|to|of|in|on|about)\s*$/i, '')
     .replace(/^[\s:,\-\u2013\u2014]+/, '')
     .replace(/[\s:,\-]+$/, '')
     .replace(/[?.!]+$/, '')
@@ -901,7 +906,81 @@ async function answerLocally(question) {
  * @param {{question: string, history: Array<{role: string, content: string}>}} input
  * @returns {Promise<{answer: string, model: string, provider: string}>}
  */
-async function askAssistant({ question, history = [] }) {
+/* ---------------- turning a draft into rows the tool can hold ----------------
+   The answer is prose with numbered lines. Pulling the scenarios back out of it
+   means the chat can hand them straight to the store, with the section headings
+   kept as a column so the grouping survives. */
+
+/** The numbered "Verify that …" lines, with the section each one sat under. */
+function parseDraft(answer) {
+  const rows = [];
+  let section = '';
+
+  String(answer).split(/\r?\n/).forEach((raw) => {
+    const line = raw.trim();
+    if (!line) return;
+
+    const numbered = line.match(/^(\d+)[.)]\s+(.*)$/);
+    if (numbered) {
+      const text = numbered[2].trim();
+      if (text.length > 10) rows.push({ scenario: text, section });
+      return;
+    }
+
+    // a short line that is not a sentence is a heading for what follows
+    if (line.length <= 60 && !/[.!?]$/.test(line) && !/^[-*\u2022]/.test(line)) {
+      section = line.replace(/[:\s]+$/, '');
+    }
+  });
+
+  return rows;
+}
+
+/** Which product a feature belongs to, from the words it uses. */
+const PRODUCT_HINTS = {
+  message: ['chat', 'message', 'dm', 'channel', 'slack', 'teams', 'conversation', 'thread', 'reaction'],
+  email: ['email', 'mail', 'mailbox', 'inbox', 'folder', 'outlook', 'gmail', 'exchange'],
+  content: ['file', 'folder', 'drive', 'document', 'sharepoint', 'onedrive', 'permission', 'content'],
+  datasprawl: ['sprawl', 'duplicate', 'stale', 'redundant', 'orphan'],
+};
+
+function guessProduct(feature, fallback) {
+  const q = String(feature).toLowerCase();
+  let best = null;
+  let bestScore = 0;
+
+  Object.entries(PRODUCT_HINTS).forEach(([key, words]) => {
+    const score = words.filter((w) => q.includes(w)).length;
+    if (score > bestScore) { best = key; bestScore = score; }
+  });
+
+  if (best) return best;
+  return (fallback && PRODUCT_HINTS[fallback]) ? fallback : 'message';
+}
+
+/** A title for the enhancement the rows will live under. */
+function enhancementName(feature) {
+  const first = String(feature).split(/(?<=[.!?])\s/)[0] || String(feature);
+  const words = first
+    .replace(/[\s:,\-]+$/, '')
+    .replace(/[.!?]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ');
+
+  const short = words.slice(0, 12).join(' ').replace(/[\s,\-]+$/, '');
+  const title = short.charAt(0).toUpperCase() + short.slice(1);
+  return title.length > 120 ? `${title.slice(0, 117)}…` : title;
+}
+
+/** Did the user ask for the rows to go into the tool, not just to see them? */
+function wantsSaved(q) {
+  return /\b(add|save|upload|put|store|insert|append|create)\b[\s\S]*\b(tool|it|them|these|enhancement|list|table)\b/.test(q)
+    || /\b(add|save|upload) (them|it|these|this)\b/.test(q)
+    || /\binto the tool\b|\bto the tool\b|\bin the tool\b/.test(q);
+}
+
+async function askAssistant({ question, history = [], currentProduct } = {}) {
   const text = String(question || '').trim();
   if (!text) {
     const err = new Error('Ask a question first.');
@@ -918,6 +997,8 @@ async function askAssistant({ question, history = [] }) {
   // independent of any API key or its billing state.
   const direct = await answerLocally(text);
   if (direct) return { answer: direct, model: 'built-in', provider: 'local' };
+
+  const drafting = Boolean(scenarioFallback(text));
 
   const { provider, model, ready } = activeProvider();
   if (!ready) {
@@ -953,7 +1034,21 @@ async function askAssistant({ question, history = [] }) {
       err.status = 502;
       throw err;
     }
-    return { answer: tidy, model, provider };
+    if (!drafting) return { answer: tidy, model, provider };
+
+    const scenarios = parseDraft(tidy);
+    return {
+      answer: tidy,
+      model,
+      provider,
+      draft: scenarios.length ? {
+        feature: featureOf(text.toLowerCase()),
+        name: enhancementName(featureOf(text.toLowerCase())),
+        product: guessProduct(text, currentProduct),
+        scenarios,
+        save: wantsSaved(text),
+      } : null,
+    };
   } catch (apiErr) {
     const fallback = scenarioFallback(text);
     if (fallback) return { answer: fallback, model: 'built-in', provider: 'local' };
@@ -965,4 +1060,4 @@ async function askAssistant({ question, history = [] }) {
   }
 }
 
-module.exports = { askAssistant, buildContext };
+module.exports = { askAssistant, buildContext, parseDraft, guessProduct, enhancementName };

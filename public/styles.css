@@ -704,6 +704,21 @@ body {
   .bot-launcher { right: 16px; bottom: 16px; }
 }
 
+
+/* actions offered under a drafted set of scenarios */
+.bot-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.bot-action {
+  background: var(--white); border: 1px solid var(--blue-line); color: var(--blue);
+  border-radius: var(--cf-radius-sm); padding: 7px 12px; cursor: pointer;
+  font: 600 12px/1.3 inherit;
+  transition: background .14s var(--ease), border-color .14s var(--ease);
+}
+.bot-action:hover { background: var(--blue-tint); }
+.bot-action:disabled { opacity: .6; cursor: progress; }
+.bot-action.is-primary { background: var(--cf-color-primary); border-color: var(--cf-color-primary); color: var(--white); }
+.bot-action.is-primary:hover { background: var(--blue-dark); border-color: var(--blue-dark); }
+.bot-actions-note { font-size: 11px; color: var(--faint); margin-left: 2px; }
+
 /* ---------- empty state ---------- */
 .empty {
   border: 1px dashed var(--border-strong); background: var(--white); border-radius: var(--radius);

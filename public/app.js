@@ -1830,6 +1830,95 @@ function botBubble(role, text, extraClass = '') {
   return row;
 }
 
+/** CSV of the drafted rows, in the same shape the upload dialog accepts. */
+function draftToCsv(draft) {
+  const cell = (v) => {
+    const s = String(v == null ? '' : v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const hasSection = draft.scenarios.some((r) => r.section);
+  const header = ['S.No', 'Test Scenario', ...(hasSection ? ['Section'] : [])];
+  const lines = [header.map(cell).join(',')];
+
+  draft.scenarios.forEach((row, i) => {
+    lines.push([i + 1, row.scenario, ...(hasSection ? [row.section || ''] : [])].map(cell).join(','));
+  });
+  return lines.join('\r\n');
+}
+
+function downloadCsv(draft) {
+  const blob = new Blob(['\ufeff' + draftToCsv(draft)], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${draft.name.replace(/[^a-z0-9 \-_]/gi, '').trim() || 'scenarios'}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Put the drafted rows into the tool, the same as uploading a sheet of them. */
+async function saveDraft(draft, button) {
+  button.disabled = true;
+  const previous = button.textContent;
+  button.textContent = 'Saving\u2026';
+
+  try {
+    const result = await api('/api/assistant/scenarios', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        product: draft.product,
+        name: draft.name,
+        scenarios: draft.scenarios,
+      }),
+    });
+
+    const where = productLabel(draft.product);
+    botBubble('bot', `${plural(result.added, 'scenario')} ${result.appended ? 'added to' : 'saved as'} "${result.enhancement.name}" under ${where}.`);
+
+    await loadProducts();
+    if (state.view === 'enhancements' && state.product === draft.product) await openProduct(draft.product);
+    else if (state.view === 'dashboard') renderDashboard();
+    toast(`${plural(result.added, 'scenario')} saved to ${where}.`);
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = previous;
+    botBubble('bot', err.message, 'is-error');
+  }
+}
+
+/** The row of actions under a drafted answer. */
+function botDraftActions(draft) {
+  const wrap = document.createElement('div');
+  wrap.className = 'bot-actions';
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'bot-action is-primary';
+  save.textContent = `Save to ${productLabel(draft.product)}`;
+  save.title = `Create "${draft.name}" with ${plural(draft.scenarios.length, 'scenario')}`;
+  save.addEventListener('click', () => saveDraft(draft, save));
+  wrap.appendChild(save);
+
+  const csv = document.createElement('button');
+  csv.type = 'button';
+  csv.className = 'bot-action';
+  csv.textContent = 'Download CSV';
+  csv.addEventListener('click', () => downloadCsv(draft));
+  wrap.appendChild(csv);
+
+  const count = document.createElement('span');
+  count.className = 'bot-actions-note';
+  count.textContent = plural(draft.scenarios.length, 'scenario');
+  wrap.appendChild(count);
+
+  el('botLog').appendChild(wrap);
+  el('botLog').scrollTop = el('botLog').scrollHeight;
+  return save;
+}
+
 /** First open: say what it can do, and offer a few one-tap questions. */
 function botGreet() {
   if (bot.greeted) return;
@@ -1879,11 +1968,18 @@ async function askBot(question) {
     const result = await api('/api/assistant', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: text, history: bot.history }),
+      body: JSON.stringify({ question: text, history: bot.history, currentProduct: state.product || null }),
     });
 
     thinking.remove();
     botBubble('bot', result.answer);
+
+    if (result.draft && result.draft.scenarios.length) {
+      const saveButton = botDraftActions(result.draft);
+      // they asked for it to go in, so do it rather than make them click
+      if (result.draft.save) await saveDraft(result.draft, saveButton);
+    }
+
     bot.history.push({ role: 'user', content: text });
     bot.history.push({ role: 'assistant', content: result.answer });
     bot.history = bot.history.slice(-8);
