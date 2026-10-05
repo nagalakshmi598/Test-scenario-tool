@@ -15,6 +15,20 @@ npm start        # http://localhost:4310
 
 Use a different port with `PORT=5000 npm start` (PowerShell: `$env:PORT=5000; npm start`).
 
+That is enough to run it: scenarios are stored in `server/data/db.json` and
+nothing else needs setting up.
+
+For the AI features (the Test Cases button, and asking the assistant to draft
+scenarios) or to store the data in MongoDB instead, copy the template and fill
+in what you need:
+
+```bash
+copy .env.sample .env     # macOS/Linux: cp .env.sample .env
+```
+
+`.env.sample` lists every setting with a note on what it does. `.env` itself is
+gitignored — it holds live keys, so never commit it.
+
 ## How it works
 
 ```
@@ -91,7 +105,7 @@ It refuses to run if the collections already hold data — pass `--replace` to o
 
 ## AI key for the Test Cases button (OpenAI or Claude)
 
-Everything else works without a key. To generate test cases, copy `.env.example` to `.env` in this
+Everything else works without a key. To generate test cases, copy `.env.sample` to `.env` in this
 folder, put in **one** key, and restart the server:
 
 ```
