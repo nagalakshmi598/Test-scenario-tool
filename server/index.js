@@ -480,7 +480,7 @@ app.post('/api/assistant/scenarios', wrap(async (req, res) => {
     const updated = await store.setScenarios(existing.id, {
       scenarios: rows,
       extraColumns,
-      sourceFile: existing.sourceFile || 'Drafted in the assistant',
+      sourceFile: existing.sourceFile || 'Assistant',
       mode: 'append',
     });
     return res.json({
@@ -493,8 +493,8 @@ app.post('/api/assistant/scenarios', wrap(async (req, res) => {
   const created = await store.createEnhancement({
     product,
     name: String(name).trim(),
-    description: (description || 'Drafted in the assistant').trim(),
-    sourceFile: 'Drafted in the assistant',
+    description: (description || '').trim(),
+    sourceFile: 'Assistant',
     scenarios: rows,
     extraColumns,
   });

@@ -958,6 +958,34 @@ function guessProduct(feature, fallback) {
   return (fallback && PRODUCT_HINTS[fallback]) ? fallback : 'message';
 }
 
+/**
+ * A title for the enhancement the rows will live under.
+ *
+ * The feature as typed is the best source, but a terse or garbled message
+ * leaves nothing usable — "two aslso" is not a feature. When that happens the
+ * drafted scenarios themselves say what this is about, so name it from their
+ * first section heading, or from the first scenario.
+ */
+function titleFor(feature, scenarios) {
+  const fromAsk = enhancementName(feature);
+  const terms = keyTerms(fromAsk);
+
+  /* The real test is not how many words the ask had, but whether they describe
+     what came back. "two aslso" is two words and means nothing; if none of its
+     words appear in the scenarios, it is not what this set is about. */
+  const body = scenarios.map((s) => s.scenario).join(' ').toLowerCase();
+  const grounded = terms.filter((term) => body.includes(term)).length;
+
+  if (terms.length >= 2 && grounded >= 1 && fromAsk.split(/\s+/).length >= 2) return fromAsk;
+
+  const section = (scenarios.find((s) => s.section) || {}).section;
+  if (section) return enhancementName(section);
+
+  const first = (scenarios[0] || {}).scenario || '';
+  const subject = first.replace(/^verify that\s+/i, '').split(/\s+(?:is|are|can|should|will|does|do)\s+/)[0];
+  return enhancementName(subject || fromAsk || 'Drafted scenarios');
+}
+
 /** A title for the enhancement the rows will live under. */
 function enhancementName(feature) {
   const first = String(feature).split(/(?<=[.!?])\s/)[0] || String(feature);
@@ -1043,7 +1071,7 @@ async function askAssistant({ question, history = [], currentProduct } = {}) {
       provider,
       draft: scenarios.length ? {
         feature: featureOf(text.toLowerCase()),
-        name: enhancementName(featureOf(text.toLowerCase())),
+        name: titleFor(featureOf(text.toLowerCase()), scenarios),
         product: guessProduct(text, currentProduct),
         scenarios,
         save: wantsSaved(text),
@@ -1060,4 +1088,4 @@ async function askAssistant({ question, history = [], currentProduct } = {}) {
   }
 }
 
-module.exports = { askAssistant, buildContext, parseDraft, guessProduct, enhancementName };
+module.exports = { askAssistant, buildContext, parseDraft, guessProduct, enhancementName, titleFor };
