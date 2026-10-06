@@ -16,6 +16,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+const { defaultStatus } = require('./scenarios');
+
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
 
@@ -166,7 +168,7 @@ function createEnhancement({ product, name, description, sourceFile, scenarios, 
 }
 
 function renumber(scenarios) {
-  return scenarios.map((s, idx) => ({ status: 'pass', ...s, sno: idx + 1 }));
+  return scenarios.map((s, idx) => ({ ...s, status: s.status || defaultStatus(s), sno: idx + 1 }));
 }
 
 function setScenarios(id, { scenarios, extraColumns, sourceFile, mode = 'replace' }) {
@@ -197,7 +199,7 @@ function addScenario(id, { scenario, extra }) {
 
   enhancement.scenarios.push({
     sno: enhancement.scenarios.length + 1,
-    status: 'pass',
+    status: defaultStatus({ extra: cleanExtra }),
     scenario: scenario.trim(),
     sourceSno: '',
     extra: cleanExtra,

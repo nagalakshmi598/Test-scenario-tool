@@ -493,14 +493,24 @@ function iconButton(icon, label, className = '') {
 
 /* ---------------- run status ----------------
    Scenarios written before the tool tracked results count as passed: they were
-   run and signed off, the tool simply had nowhere to record it. */
+   run and signed off, the tool simply had nowhere to record it. A negative
+   scenario is the exception — it describes the migration refusing something,
+   so Fail is the outcome it is about. Both are only the starting value: the
+   pill is clickable and a tester's own result stands. */
 
 const STATUS_ORDER = ['pass', 'fail', 'pending'];
 const STATUS_LABEL = { pass: 'Pass', fail: 'Fail', pending: 'Not run' };
 
+function isNegative(scenario) {
+  const extra = (scenario && scenario.extra) || {};
+  const key = Object.keys(extra).find((k) => /^type$/i.test(k));
+  return key ? /^(negative|neg)$/i.test(String(extra[key]).trim()) : false;
+}
+
 function scenarioStatus(scenario) {
   const value = scenario && scenario.status;
-  return STATUS_ORDER.includes(value) ? value : 'pass';
+  if (STATUS_ORDER.includes(value)) return value;
+  return isNegative(scenario) ? 'fail' : 'pass';
 }
 
 async function cycleScenarioStatus(sno, button) {

@@ -18,6 +18,7 @@
 
 const crypto = require('crypto');
 const { getDb, fromDoc } = require('./db');
+const { defaultStatus } = require('./scenarios');
 
 const PRODUCTS = [
   { key: 'message', label: 'Message', blurb: 'Chat, threads and message migration' },
@@ -133,7 +134,7 @@ async function createEnhancement({ product, name, description, sourceFile, scena
 
 /** Rows keep a clean 1..N numbering, and default to passed. */
 function renumber(scenarios) {
-  return scenarios.map((s, idx) => ({ status: 'pass', ...s, sno: idx + 1 }));
+  return scenarios.map((s, idx) => ({ ...s, status: s.status || defaultStatus(s), sno: idx + 1 }));
 }
 
 /** Write the scenarios back and hand the whole enhancement to the caller. */
@@ -176,7 +177,7 @@ async function addScenario(id, { scenario, extra }) {
 
   const rows = [...enhancement.scenarios, {
     sno: enhancement.scenarios.length + 1,
-    status: 'pass',
+    status: defaultStatus({ extra: cleanExtra }),
     scenario: scenario.trim(),
     sourceSno: '',
     extra: cleanExtra,

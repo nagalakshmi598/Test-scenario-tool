@@ -14,6 +14,7 @@ const path = require('path');
 
 require('./testcases');                 // loads .env into process.env
 const { getDb, close, dbName, configured } = require('./db');
+const { defaultStatus } = require('./scenarios');
 
 const DATA_FILE = path.join(__dirname, 'data', 'db.json');
 const REPLACE = process.argv.includes('--replace');
@@ -37,7 +38,7 @@ function toEnhancement(e) {
     _id: id,
     ...rest,
     nameLower: String(e.name || '').trim().toLowerCase(),
-    scenarios: (e.scenarios || []).map((s, idx) => ({ status: 'pass', ...s, sno: idx + 1 })),
+    scenarios: (e.scenarios || []).map((s, idx) => ({ ...s, status: s.status || defaultStatus(s), sno: idx + 1 })),
   };
 }
 
