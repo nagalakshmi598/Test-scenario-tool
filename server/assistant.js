@@ -421,6 +421,32 @@ const LOOKUP_VERBS = new RegExp(
 );
 const DRAFT_VERBS = /\b(write|generate|create|draft|prepare|suggest|compose|provide|give|need|want|make|come up)\b/;
 
+/**
+ * Asking for an explanation, not for the data.
+ *
+ * "Show the failed scenarios" and "why did those fail" both mention failing,
+ * but only the first wants the list. Replaying it for the second is how the
+ * assistant ends up answering two different questions the same way.
+ */
+const REASONING = /\b(why|reason|reasons|cause|caused|causing|explain|explanation|how come|what makes|root cause)\b/;
+
+/**
+ * Leaning on the previous turn to say what it is about.
+ *
+ * The canned answers see one message at a time, so "those scenarios" means
+ * nothing to them; the model is given the recent turns and can resolve it.
+ */
+const REFERS_BACK = /\b(those|these|them|they|that one|the ones|above|previous|last answer)\b/;
+
+function needsContext(q, history) {
+  // "why did these fail" is answered from the store: it knows whether a
+  // reason was ever recorded, which a model can only guess at from silence
+  if (REASONING.test(q) && /\bfail/.test(q)) return false;
+
+  if (REASONING.test(q)) return true;
+  return Boolean(history && history.length) && REFERS_BACK.test(q);
+}
+
 /** Does this read as a question, rather than a statement of a feature? */
 function isQuestion(q) {
   const s = q.trim();
@@ -756,6 +782,18 @@ function findDocument(q, documents) {
 }
 
 /** Scenarios in scope once a product or enhancement has been named. */
+/**
+ * What "the most" is counted in, picked from how the question is worded.
+ * Ordered: the narrower wordings are tested before the general ones.
+ */
+const MEASURES = [
+  { when: /fail/, of: (e) => e.counts.fail, noun: 'failing scenario' },
+  { when: /pass/, of: (e) => e.counts.pass, noun: 'passing scenario' },
+  { when: /not run|pending|untested|not tested/, of: (e) => e.counts.pending, noun: 'scenario not yet run' },
+  { when: /test ?case/, of: (e) => e.withCases, noun: 'scenario with test cases' },
+  { when: /scenario|test/, of: (e) => e.scenarios.length, noun: 'scenario' },
+];
+
 function scopedScenarios({ enhancements }, product, enhancement) {
   if (enhancement) return [{ enhancement, scenarios: enhancement.scenarios }];
   const list = product ? enhancements.filter((e) => e.product.key === product.key) : enhancements;
@@ -865,27 +903,75 @@ async function answerLocally(question) {
       none.map((e) => `  • ${e.name} (${e.product.label}, ${plural(e.scenarios.length, 'scenario')})`).join('\n')}`;
   }
 
-  /* ---- most / fewest ---- */
-  if (/most|highest|largest|biggest/.test(q) && /scenario/.test(q)) {
-    const top = [...enhancements].sort((a, b) => b.scenarios.length - a.scenarios.length)[0];
+  /* ---- most / fewest ----
+     "Most scenarios", "most failures" and "most test cases" all rank the same
+     enhancements, by different measures. Ranking only by scenario count sent
+     the rest down to the failure list, which answered a different question. */
+  const measure = MEASURES.find(({ when }) => when.test(q));
+  if (measure && /most|highest|largest|biggest|worst/.test(q)) {
+    const top = [...enhancements].sort((a, b) => measure.of(b) - measure.of(a))[0];
     if (!top) return 'There are no enhancements yet.';
-    return `"${top.name}" (${top.product.label}) has the most, with ${plural(top.scenarios.length, 'scenario')}.`;
+    return `"${top.name}" (${top.product.label}) has the most, with ${plural(measure.of(top), measure.noun)}.`;
   }
-  if (/fewest|least|lowest|smallest/.test(q) && /scenario/.test(q)) {
-    const low = [...enhancements].sort((a, b) => a.scenarios.length - b.scenarios.length)[0];
+  if (measure && /fewest|least|lowest|smallest/.test(q)) {
+    const low = [...enhancements].sort((a, b) => measure.of(a) - measure.of(b))[0];
     if (!low) return 'There are no enhancements yet.';
-    return `"${low.name}" (${low.product.label}) has the fewest, with ${plural(low.scenarios.length, 'scenario')}.`;
+    return `"${low.name}" (${low.product.label}) has the fewest, with ${plural(measure.of(low), measure.noun)}.`;
   }
 
   /* ---- failed / not run ---- */
   const wantsFail = /fail/.test(q);
   const wantsPending = /not run|pending|untested|not tested|yet to/.test(q);
+
+  /* Asked why they failed, with nothing recorded to answer it. The sheets
+     carry a status and no note, so there is nothing here to explain with. */
+  if (wantsFail && REASONING.test(q)) {
+    const groups = scopedScenarios(data, product, enhancement);
+    const { total } = listScenarioLines(groups, (s) => statusOf(s) === 'fail');
+    const where = enhancement ? ` in "${enhancement.name}"` : product ? ` for ${product.label}` : '';
+    /* Whatever the sheet recorded beside the failing row — a remark, a
+       defect id, a tester's note — is the only reason the tool holds. */
+    const noted = [];
+    groups.forEach(({ enhancement, scenarios }) => {
+      scenarios.forEach((s) => {
+        if (statusOf(s) !== 'fail') return;
+        const note = Object.entries(s.extra || {})
+          .filter(([key, value]) => value && !/^(type|section)$/i.test(key))
+          .map(([key, value]) => `${key}: ${value}`)
+          .join('; ');
+        if (note) noted.push(`  ${s.sno}. ${s.scenario}  — ${note}  (${enhancement.name})`);
+      });
+    });
+
+    if (!noted.length) {
+      return `The tool records that ${plural(total, 'scenario')} failed${where}, but not why. `
+        + 'The uploaded sheets carry a status and no failure note, so there is nothing stored to explain them.\n\n'
+        + 'To keep the reasons: add a column such as "Remarks", "Comments" or "Defect" to the sheet and '
+        + 'upload it again — I will then report what it says against each failing scenario.';
+    }
+
+    return `${plural(noted.length, 'failing scenario')}${where} ${noted.length === 1 ? 'has' : 'have'} a recorded reason:\n`
+      + `${noted.slice(0, 12).join('\n')}`
+      + (noted.length > 12 ? `\n  …and ${noted.length - 12} more.` : '')
+      + (total > noted.length ? `\n\nThe other ${total - noted.length} record no reason.` : '');
+  }
+
   if (wantsFail || wantsPending) {
     const want = wantsFail ? 'fail' : 'pending';
     const label = wantsFail ? 'failed' : 'not yet run';
     const groups = scopedScenarios(data, product, enhancement);
     const { lines, total } = listScenarioLines(groups, (s) => statusOf(s) === want);
     const where = enhancement ? ` in "${enhancement.name}"` : product ? ` for ${product.label}` : '';
+
+    /* "How many failed" asks for the number; "show the failed ones" asks for
+       the list. Both mention failing, and answering them the same way is the
+       whole complaint. */
+    if (/how many|count|number of/.test(q)) {
+      const scoped = groups.reduce((n, g) => n + g.scenarios.length, 0);
+      return wantsFail
+        ? `${total} of ${plural(scoped, 'scenario')}${where} failed.`
+        : `${total} of ${plural(scoped, 'scenario')}${where} ${total === 1 ? 'has' : 'have'} not been run yet.`;
+    }
     if (!total) return `No scenarios are marked ${label}${where}. ${totals.pass} of ${totals.scenarios} are passing.`;
     return `${plural(total, 'scenario')} ${label}${where}:\n${lines.join('\n')}${
       total > lines.length ? `\n  …and ${total - lines.length} more.` : ''}`;
@@ -1179,11 +1265,19 @@ async function askAssistant({ question, history = [], currentProduct, attachment
   const images = files.filter((f) => f.image);
   const fileText = files.filter((f) => f.text);
 
+  /* Structured questions are answered from the store: exact, instant, and
+     independent of any API key or its billing state. A question that asks for
+     a reason, or that points back at the last answer, is not one of those —
+     it goes to the model, which has the recent turns and the same data. The
+     canned answer is kept as the fallback for when no model is reachable. */
+  const reasoned = needsContext(text, history);
+  let stored = null;
+
   if (!files.length) {
-    // Structured questions are answered from the store: exact, instant, and
-    // independent of any API key or its billing state.
-    const direct = await answerLocally(text);
-    if (direct) return { answer: direct, model: 'built-in', provider: 'local' };
+    stored = await answerLocally(text);
+    if (stored && !(reasoned && activeProvider().ready)) {
+      return { answer: stored, model: 'built-in', provider: 'local' };
+    }
   }
 
   const drafting = Boolean(scenarioFallback(text))
@@ -1257,6 +1351,8 @@ async function askAssistant({ question, history = [], currentProduct, attachment
       } : null,
     };
   } catch (apiErr) {
+    if (stored) return { answer: stored, model: 'built-in', provider: 'local' };
+
     const fallback = scenarioFallback(text);
     if (fallback) return { answer: fallback, model: 'built-in', provider: 'local' };
 
