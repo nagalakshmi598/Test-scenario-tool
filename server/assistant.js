@@ -200,7 +200,55 @@ async function buildContext() {
   return lines.join('\n');
 }
 
-async function callOpenAi({ model, context, question, history, system = SYSTEM }) {
+/** Whether a provider turned the request down over an attached picture. */
+function rejectsImage(err) {
+  if (!err) return false;
+  if (err.status && err.status !== 400 && err.status !== 415 && err.status !== 422) return false;
+
+  return /image|picture|media_type|unsupported file|could not process/i.test(String(err.message || ''));
+}
+
+/** Attached files, as a block for the model to read alongside the question. */
+function attachmentContext(files) {
+  if (!files.length) return '';
+  return [
+    '',
+    '=== FILES THE USER ATTACHED TO THIS MESSAGE ===',
+    ...files.map((f) => `\n--- ${f.name} ---\n${f.text}`),
+  ].join('\n');
+}
+
+/** A user turn carrying pictures, in OpenAI's shape. */
+function openAiTurn(question, images) {
+  if (!images.length) return { role: 'user', content: question };
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text: question },
+      ...images.map((img) => ({
+        type: 'image_url',
+        image_url: { url: `data:${img.mime};base64,${img.image}` },
+      })),
+    ],
+  };
+}
+
+/** The same, in Anthropic's shape. */
+function anthropicTurn(question, images) {
+  if (!images.length) return { role: 'user', content: question };
+  return {
+    role: 'user',
+    content: [
+      ...images.map((img) => ({
+        type: 'image',
+        source: { type: 'base64', media_type: img.mime, data: img.image },
+      })),
+      { type: 'text', text: question },
+    ],
+  };
+}
+
+async function callOpenAi({ model, context, question, history, system = SYSTEM, images = [] }) {
   const OpenAIModule = require('openai');
   const OpenAI = OpenAIModule.default || OpenAIModule;
   const client = new OpenAI();
@@ -210,7 +258,7 @@ async function callOpenAi({ model, context, question, history, system = SYSTEM }
     messages: [
       { role: 'system', content: `${system}\n\n=== CONTEXT ===\n${context}` },
       ...history,
-      { role: 'user', content: question },
+      openAiTurn(question, images),
     ],
   });
 
@@ -218,7 +266,7 @@ async function callOpenAi({ model, context, question, history, system = SYSTEM }
   return (choice && choice.message && choice.message.content) || '';
 }
 
-async function callAnthropic({ model, context, question, history, system = SYSTEM }) {
+async function callAnthropic({ model, context, question, history, system = SYSTEM, images = [] }) {
   const AnthropicModule = require('@anthropic-ai/sdk');
   const Anthropic = AnthropicModule.default || AnthropicModule;
   const client = new Anthropic();
@@ -227,7 +275,7 @@ async function callAnthropic({ model, context, question, history, system = SYSTE
     model,
     max_tokens: 2400,
     system: `${system}\n\n=== CONTEXT ===\n${context}`,
-    messages: [...history, { role: 'user', content: question }],
+    messages: [...history, anthropicTurn(question, images)],
   });
 
   return message.content
@@ -358,7 +406,19 @@ function mentionsScenario(q) {
 
 /* Asking to see the scenarios already held is a different job from asking for
    new ones to be written, and the two share most of their vocabulary. */
-const LOOKUP_VERBS = /\b(find|show|search|display|list|see|view|which|how many|are there|do we have|exist)\b/;
+/**
+ * Reading the tool, rather than adding to it.
+ *
+ * The word alone is not enough: "the attendee list", "a distribution list",
+ * "members can view the channel" and "we see duplicates" are plain migration
+ * vocabulary, and taking any of them for a lookup turns a request to write
+ * scenarios into a search of the write-ups. So the word has to be doing the
+ * asking — opening the message, or governing one of the tool's own nouns. */
+const LOOKUP_WORD = '(?:find|show|search|display|list|see|view|which|how many|are there|do we have|exist)';
+const TOOL_NOUN = '(?:scenarios?|sceanrios?|test ?cases?|documents?|write-?ups?|enhancements?|results?|screenshots?|products?)';
+const LOOKUP_VERBS = new RegExp(
+  `^\\s*${LOOKUP_WORD}\\b|\\b${LOOKUP_WORD}\\b(?:\\s+\\w+){0,3}\\s+${TOOL_NOUN}\\b`
+);
 const DRAFT_VERBS = /\b(write|generate|create|draft|prepare|suggest|compose|provide|give|need|want|make|come up)\b/;
 
 /** Does this read as a question, rather than a statement of a feature? */
@@ -1008,8 +1068,57 @@ function guessProduct(feature, fallback) {
  * drafted scenarios themselves say what this is about, so name it from their
  * first section heading, or from the first scenario.
  */
+/* How people introduce a feature before naming it. None of this belongs in
+   the title: the set is called "Huddle recording migration", not "We are
+   adding a feature where a huddle recording…". */
+const FRAMING = [
+  /^(?:so\s+)?(?:we|i|they|our team)\s+(?:are|were|'re|am|have|has|had|want|need|would like|plan)\b[^.]*?\b(?:feature|functionality|capability|flow|option|change)\b\s*(?:where|that|which|called|named|for|to|in which|:)?\s*/i,
+  /^there\s+(?:is|will be)\s+(?:a|an)\s+(?:new\s+)?(?:feature|functionality)\s*(?:where|that|which|called|named)?\s*/i,
+  /^(?:the|this|a|an|our)\s+(?:new\s+)?(?:feature|functionality)\s+(?:is|where|that|which|lets|allows|enables|called|named)\s*/i,
+  /^(?:in|for)\s+this\s+(?:feature|release|sprint)\s*,?\s*/i,
+];
+
+/* Words that make a span a statement about the feature rather than its name. */
+const FINITE_VERB = /\b(?:is|are|was|were|will|would|can|could|should|must|lets|allows|enables|happens|gets|keeps|carries|shows)\b/i;
+
+/** Product names the lower-casing upstream flattened. */
+const PROPER = {
+  slack: 'Slack', teams: 'Teams', microsoft: 'Microsoft', google: 'Google',
+  sharepoint: 'SharePoint', onedrive: 'OneDrive', dropbox: 'Dropbox',
+  outlook: 'Outlook', gmail: 'Gmail', jira: 'Jira', confluence: 'Confluence',
+  zoom: 'Zoom', webex: 'Webex', egnyte: 'Egnyte', cloudfuze: 'CloudFuze',
+};
+
+function restoreNames(text) {
+  return String(text).replace(/\b[a-z][a-z0-9]*\b/gi, (word) => PROPER[word.toLowerCase()] || word);
+}
+
+/**
+ * The feature's name, taken from how it was described.
+ *
+ * A short ask is already a name — "shared channel migration" needs nothing
+ * done to it. A described feature is a sentence, and the name is its subject:
+ * everything up to the verb, once the framing is off.
+ */
+function nameFromAsk(feature) {
+  let rest = String(feature).trim();
+  FRAMING.forEach((pattern) => { rest = rest.replace(pattern, ''); });
+  rest = rest.replace(/^(?:a|an|the)\s+/i, '').trim();
+
+  const words = rest.split(/\s+/).filter(Boolean);
+  if (words.length <= 8 && !FINITE_VERB.test(rest)) return rest;
+
+  // a description: the subject is what sits in front of the verb
+  const subject = rest.split(FINITE_VERB)[0]
+    .replace(/[,;:]\s*$/, '')
+    .replace(/\s+(?:and|or|with|from|to)\s*$/i, '')
+    .trim();
+
+  return subject.split(/\s+/).length >= 2 ? subject : rest;
+}
+
 function titleFor(feature, scenarios) {
-  const fromAsk = enhancementName(feature);
+  const fromAsk = enhancementName(nameFromAsk(feature));
   const terms = keyTerms(fromAsk);
 
   /* The real test is not how many words the ask had, but whether they describe
@@ -1038,7 +1147,7 @@ function enhancementName(feature) {
     .trim()
     .split(' ');
 
-  const short = words.slice(0, 12).join(' ').replace(/[\s,\-]+$/, '');
+  const short = restoreNames(words.slice(0, 12).join(' ').replace(/[\s,\-]+$/, ''));
   const title = short.charAt(0).toUpperCase() + short.slice(1);
   return title.length > 120 ? `${title.slice(0, 117)}…` : title;
 }
@@ -1050,7 +1159,7 @@ function wantsSaved(q) {
     || /\binto the tool\b|\bto the tool\b|\bin the tool\b/.test(q);
 }
 
-async function askAssistant({ question, history = [], currentProduct } = {}) {
+async function askAssistant({ question, history = [], currentProduct, attachments = [] } = {}) {
   const text = String(question || '').trim();
   if (!text) {
     const err = new Error('Ask a question first.');
@@ -1063,12 +1172,22 @@ async function askAssistant({ question, history = [], currentProduct } = {}) {
     throw err;
   }
 
-  // Structured questions are answered from the store: exact, instant, and
-  // independent of any API key or its billing state.
-  const direct = await answerLocally(text);
-  if (direct) return { answer: direct, model: 'built-in', provider: 'local' };
+  /* An attachment is the whole point of the message — a screenshot of a bug,
+     a sheet of scenarios — so the local answerers, which cannot see it, step
+     aside and the model takes the turn. */
+  const files = Array.isArray(attachments) ? attachments : [];
+  const images = files.filter((f) => f.image);
+  const fileText = files.filter((f) => f.text);
 
-  const drafting = Boolean(scenarioFallback(text));
+  if (!files.length) {
+    // Structured questions are answered from the store: exact, instant, and
+    // independent of any API key or its billing state.
+    const direct = await answerLocally(text);
+    if (direct) return { answer: direct, model: 'built-in', provider: 'local' };
+  }
+
+  const drafting = Boolean(scenarioFallback(text))
+    || (files.length > 0 && isDraftRequest(text.toLowerCase()));
 
   const { provider, model, ready } = activeProvider();
   if (!ready) {
@@ -1083,14 +1202,31 @@ async function askAssistant({ question, history = [], currentProduct } = {}) {
     .slice(-MAX_HISTORY)
     .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_QUESTION) }));
 
-  const context = await buildContext();
+  const context = (await buildContext()) + attachmentContext(fileText);
   // a drafting request only reaches here when no write-up covered the feature
   const system = scenarioFallback(text) ? SYSTEM_DRAFT : SYSTEM;
 
+  const ask = (pictures) => (provider === 'openai'
+    ? callOpenAi({ model, context, question: text, history: trimmed, system, images: pictures })
+    : callAnthropic({ model, context, question: text, history: trimmed, system, images: pictures }));
+
+  let dropped = '';
+
   try {
-    const answer = provider === 'openai'
-      ? await callOpenAi({ model, context, question: text, history: trimmed, system })
-      : await callAnthropic({ model, context, question: text, history: trimmed, system });
+    let answer;
+    try {
+      answer = await ask(images);
+    } catch (imageErr) {
+      /* A picture the provider will not take should cost the message its
+         picture, not its answer: the sheet or the write-up attached beside it
+         is still readable, and so is the question. */
+      if (!images.length || !rejectsImage(imageErr)) throw imageErr;
+
+      answer = await ask([]);
+      dropped = images.length === 1
+        ? `I could not read ${images[0].name || 'the image'}, so this answers the rest of your message.\n\n`
+        : `I could not read the ${images.length} images attached, so this answers the rest of your message.\n\n`;
+    }
 
     // models leave markdown line-break spaces that do nothing in a chat bubble
     const tidy = answer
@@ -1104,11 +1240,12 @@ async function askAssistant({ question, history = [], currentProduct } = {}) {
       err.status = 502;
       throw err;
     }
-    if (!drafting) return { answer: tidy, model, provider };
+    const full = dropped + tidy;
+    if (!drafting) return { answer: full, model, provider };
 
     const scenarios = parseDraft(tidy);
     return {
-      answer: tidy,
+      answer: full,
       model,
       provider,
       draft: scenarios.length ? {

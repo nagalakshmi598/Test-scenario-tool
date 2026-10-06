@@ -9,6 +9,7 @@ const multer = require('multer');
 const store = require('./store');
 const { extractScenarios } = require('./parse');
 const { askAssistant } = require('./assistant');
+const attachments = require('./attachments');
 const { generateTestCases, hasApiKey, activeProvider, keyProblem } = require('./testcases');
 const {
   ALLOWED_EXT: DOC_EXT,
@@ -445,6 +446,267 @@ app.get('/api/enhancements/:id/export.csv', wrap(async (req, res) => {
 // Keep scenarios the assistant drafted. This is the same thing a CSV upload
 // does — the rows just arrive from the chat instead of a file. A name that
 // already exists gets the rows appended rather than a second enhancement.
+/* ---------------- keeping drafted scenarios tidy ----------------
+   The same feature gets asked about more than once, and a model asked twice
+   will phrase a check two slightly different ways. Neither should put a
+   duplicate row in the table. */
+
+/** Scenario text reduced to what it actually says, for comparison. */
+function scenarioKey(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/^verify that\s+/, '')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(the|a|an|is|are|be|to|of|in|on|for|and|or|that|its|their)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .map((w) => (w.length > 4 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
+    .join(' ');
+}
+
+function words(s) {
+  return new Set(String(s).split(' ').filter(Boolean));
+}
+
+function shared(left, right) {
+  let n = 0;
+  left.forEach((w) => { if (right.has(w)) n += 1; });
+  return n;
+}
+
+/**
+ * How much of the shorter sentence the longer one covers.
+ *
+ * Right for duplicate scenarios: a reworded check says the same thing with a
+ * few extra words, and should still count as the one already held.
+ */
+function covers(a, b) {
+  const left = words(a);
+  const right = words(b);
+  if (!left.size || !right.size) return 0;
+  return shared(left, right) / Math.min(left.size, right.size);
+}
+
+/**
+ * How alike two names are, counting what they do not share as well.
+ *
+ * Right for matching an enhancement: by the measure above, "shared channel
+ * migration" scores a perfect 1 against "Teams to Teams standard channels,
+ * Private channels and Shared channels Migration scenarios", because every
+ * word of the short name appears in the long one. They are not the same
+ * feature, and the rows would land in the wrong list.
+ */
+function alike(a, b) {
+  const left = words(a);
+  const right = words(b);
+  if (!left.size || !right.size) return 0;
+
+  const common = shared(left, right);
+  return common / (left.size + right.size - common);
+}
+
+/**
+ * Drop rows that repeat something already held, or each other.
+ * @returns {{kept: Array, skipped: number}}
+ */
+function withoutDuplicates(rows, existingScenarios) {
+  const seen = (existingScenarios || []).map((s) => scenarioKey(s.scenario));
+  const kept = [];
+  let skipped = 0;
+
+  rows.forEach((row) => {
+    const key = scenarioKey(row.scenario);
+    if (!key) { skipped += 1; return; }
+
+    const duplicate = seen.some((other) => other === key || covers(key, other) >= 0.85);
+    if (duplicate) { skipped += 1; return; }
+
+    seen.push(key);
+    kept.push(row);
+  });
+
+  return { kept, skipped };
+}
+
+/**
+ * The enhancement these scenarios belong to, if the tool already has one.
+ *
+ * An exact name match is the easy case. The harder one is the same feature
+ * asked about in different words — "group DM names" then "group DM renaming"
+ * — which should add to what is there rather than start a rival list.
+ */
+async function enhancementFor(product, name) {
+  const exact = await store.findByName(product, name);
+  if (exact) return exact;
+
+  const wanted = scenarioKey(name);
+  if (!wanted) return null;
+
+  const candidates = await store.listEnhancements(product);
+  let best = null;
+  let bestScore = 0;
+
+  candidates.forEach((candidate) => {
+    const score = alike(wanted, scenarioKey(candidate.name));
+    if (score > bestScore) { best = candidate; bestScore = score; }
+  });
+
+  return bestScore >= 0.6 ? store.getEnhancement(best.id) : null;
+}
+
+/* ---------------- keeping drafted scenarios tidy ----------------
+   The same feature gets asked about more than once, and a model asked twice
+   will phrase a check two slightly different ways. Neither should put a
+   duplicate row in the table. */
+
+/** Scenario text reduced to what it actually says, for comparison. */
+function scenarioKey(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/^verify that\s+/, '')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(the|a|an|is|are|be|to|of|in|on|for|and|or|that|its|their)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Word overlap, 0 to 1, as a stand-in for "says the same thing". */
+function overlap(a, b) {
+  const left = new Set(a.split(' ').filter(Boolean));
+  const right = new Set(b.split(' ').filter(Boolean));
+  if (!left.size || !right.size) return 0;
+
+  let shared = 0;
+  left.forEach((w) => { if (right.has(w)) shared += 1; });
+  return shared / Math.min(left.size, right.size);
+}
+
+/**
+ * Drop rows that repeat something already held, or each other.
+ * @returns {{kept: Array, skipped: number}}
+ */
+function withoutDuplicates(rows, existingScenarios) {
+  const seen = (existingScenarios || []).map((s) => scenarioKey(s.scenario));
+  const kept = [];
+  let skipped = 0;
+
+  rows.forEach((row) => {
+    const key = scenarioKey(row.scenario);
+    if (!key) { skipped += 1; return; }
+
+    const duplicate = seen.some((other) => other === key || overlap(key, other) >= 0.85);
+    if (duplicate) { skipped += 1; return; }
+
+    seen.push(key);
+    kept.push(row);
+  });
+
+  return { kept, skipped };
+}
+
+/**
+ * The enhancement these scenarios belong to, if the tool already has one.
+ *
+ * An exact name match is the easy case. The harder one is the same feature
+ * asked about in different words — "group DM names" then "group DM renaming"
+ * — which should add to what is there rather than start a rival list.
+ */
+async function enhancementFor(product, name) {
+  const exact = await store.findByName(product, name);
+  if (exact) return exact;
+
+  const wanted = scenarioKey(name);
+  if (!wanted) return null;
+
+  const candidates = await store.listEnhancements(product);
+  let best = null;
+  let bestScore = 0;
+
+  candidates.forEach((candidate) => {
+    const score = overlap(wanted, scenarioKey(candidate.name));
+    if (score > bestScore) { best = candidate; bestScore = score; }
+  });
+
+  return bestScore >= 0.7 ? store.getEnhancement(best.id) : null;
+}
+
+/* ---------------- keeping drafted scenarios tidy ----------------
+   The same feature gets asked about more than once, and a model asked twice
+   will phrase a check two slightly different ways. Neither should put a
+   duplicate row in the table. */
+
+/** Scenario text reduced to what it actually says, for comparison. */
+function scenarioKey(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/^verify that\s+/, '')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(the|a|an|is|are|be|to|of|in|on|for|and|or|that|its|their)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Word overlap, 0 to 1, as a stand-in for "says the same thing". */
+function overlap(a, b) {
+  const left = new Set(a.split(' ').filter(Boolean));
+  const right = new Set(b.split(' ').filter(Boolean));
+  if (!left.size || !right.size) return 0;
+
+  let shared = 0;
+  left.forEach((w) => { if (right.has(w)) shared += 1; });
+  return shared / Math.min(left.size, right.size);
+}
+
+/**
+ * Drop rows that repeat something already held, or each other.
+ * @returns {{kept: Array, skipped: number}}
+ */
+function withoutDuplicates(rows, existingScenarios) {
+  const seen = (existingScenarios || []).map((s) => scenarioKey(s.scenario));
+  const kept = [];
+  let skipped = 0;
+
+  rows.forEach((row) => {
+    const key = scenarioKey(row.scenario);
+    if (!key) { skipped += 1; return; }
+
+    const duplicate = seen.some((other) => other === key || overlap(key, other) >= 0.85);
+    if (duplicate) { skipped += 1; return; }
+
+    seen.push(key);
+    kept.push(row);
+  });
+
+  return { kept, skipped };
+}
+
+/**
+ * The enhancement these scenarios belong to, if the tool already has one.
+ *
+ * An exact name match is the easy case. The harder one is the same feature
+ * asked about in different words — "group DM names" then "group DM renaming"
+ * — which should add to what is there rather than start a rival list.
+ */
+async function enhancementFor(product, name) {
+  const exact = await store.findByName(product, name);
+  if (exact) return exact;
+
+  const wanted = scenarioKey(name);
+  if (!wanted) return null;
+
+  const candidates = await store.listEnhancements(product);
+  let best = null;
+  let bestScore = 0;
+
+  candidates.forEach((candidate) => {
+    const score = overlap(wanted, scenarioKey(candidate.name));
+    if (score > bestScore) { best = candidate; bestScore = score; }
+  });
+
+  return bestScore >= 0.7 ? store.getEnhancement(best.id) : null;
+}
+
 app.post('/api/assistant/scenarios', wrap(async (req, res) => {
   const { product, name, scenarios, description } = req.body || {};
 
@@ -481,18 +743,30 @@ app.post('/api/assistant/scenarios', wrap(async (req, res) => {
   const extraColumns = [];
   if (rows.some((r) => r.extra.Type)) extraColumns.push('Type');
   if (rows.some((r) => r.extra.Section)) extraColumns.push('Section');
-  const existing = await store.findByName(product, name);
+
+  const existing = await enhancementFor(product, name);
+  const { kept, skipped } = withoutDuplicates(rows, existing ? existing.scenarios : []);
 
   if (existing) {
+    if (!kept.length) {
+      return res.json({
+        enhancement: store.summary(existing),
+        added: 0,
+        skipped,
+        appended: true,
+      });
+    }
+
     const updated = await store.setScenarios(existing.id, {
-      scenarios: rows,
-      extraColumns,
+      scenarios: kept,
+      extraColumns: Array.from(new Set([...(existing.extraColumns || []), ...extraColumns])),
       sourceFile: existing.sourceFile || 'Assistant',
       mode: 'append',
     });
     return res.json({
       enhancement: store.summary(updated),
-      added: rows.length,
+      added: kept.length,
+      skipped,
       appended: true,
     });
   }
@@ -502,18 +776,36 @@ app.post('/api/assistant/scenarios', wrap(async (req, res) => {
     name: String(name).trim(),
     description: (description || '').trim(),
     sourceFile: 'Assistant',
-    scenarios: rows,
+    scenarios: kept,
     extraColumns,
   });
 
-  res.status(201).json({ enhancement: store.summary(created), added: rows.length, appended: false });
+  res.status(201).json({ enhancement: store.summary(created), added: kept.length, skipped, appended: false });
 }));
 
-// The in-tool assistant: answers questions about what this tool holds.
-app.post('/api/assistant', wrap(async (req, res) => {
-  const { question, history, currentProduct } = req.body || {};
-  const result = await askAssistant({ question, history, currentProduct });
-  res.json(result);
+const chatUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: attachments.MAX_BYTES, files: attachments.MAX_FILES },
+}).array('files', attachments.MAX_FILES);
+
+// The in-tool assistant: answers questions about what this tool holds, and
+// reads whatever is attached to the message.
+app.post('/api/assistant', chatUpload, wrap(async (req, res) => {
+  const { question, currentProduct } = req.body || {};
+
+  // multipart sends history as a JSON string; plain JSON sends it as an array
+  let history = req.body && req.body.history;
+  if (typeof history === 'string') {
+    try { history = JSON.parse(history); } catch (err) { history = []; }
+  }
+
+  const read = await attachments.readAll(req.files);
+  const result = await askAssistant({ question, history, currentProduct, attachments: read });
+
+  res.json({
+    ...result,
+    attachments: read.map(({ name, kind, note }) => ({ name, kind, note })),
+  });
 }));
 
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars

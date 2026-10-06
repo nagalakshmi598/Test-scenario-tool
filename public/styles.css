@@ -724,6 +724,37 @@ body {
   color: var(--muted); font-size: 12.5px;
 }
 
+
+/* attachments waiting to go with the next message */
+.bot-attach {
+  display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px;
+  background: none; border: none; border-radius: 50%;
+  color: var(--muted); cursor: pointer;
+  transition: background .14s var(--ease), color .14s var(--ease);
+}
+.bot-attach:hover { background: var(--blue-tint); color: var(--cf-color-primary); }
+.bot-attach:focus-visible { outline: 2px solid var(--blue-mid); outline-offset: 2px; }
+
+.bot-tray {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 8px 12px 0; background: var(--white);
+}
+.bot-file {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  background: var(--blue-tint); color: var(--cf-color-primary);
+  border-radius: var(--cf-radius-pill); padding: 4px 6px 4px 11px;
+  font: 600 11.5px/1.4 inherit;
+}
+.bot-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px; }
+.bot-file-x {
+  display: grid; place-items: center; width: 17px; height: 17px;
+  background: none; border: none; border-radius: 50%;
+  color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
+}
+.bot-file-x:hover { background: rgba(1, 41, 172, .14); }
+
+.bot-panel.is-dropping { outline: 2px dashed var(--cf-color-primary); outline-offset: -4px; }
+
 /* ---------- empty state ---------- */
 .empty {
   border: 1px dashed var(--border-strong); background: var(--white); border-radius: var(--radius);

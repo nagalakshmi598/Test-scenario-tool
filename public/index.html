@@ -189,9 +189,15 @@
       </button>
     </header>
     <div id="botLog" class="bot-log" aria-live="polite"></div>
+    <div id="botFiles-tray" class="bot-tray" hidden></div>
     <form id="botForm" class="bot-form">
+      <button id="botAttach" class="bot-attach" type="button" aria-label="Attach files" title="Attach screenshots or files">
+        <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path d="M9.6 3.6 5.1 8.1a2.1 2.1 0 0 0 3 3l4.8-4.8a3.4 3.4 0 0 0-4.8-4.8L3.2 6.4a4.7 4.7 0 0 0 6.6 6.6l4.1-4.1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <input id="botFiles" type="file" multiple hidden
+             aria-label="Files to attach" />
       <input id="botInput" class="bot-input" type="text" maxlength="1000" autocomplete="off"
-             placeholder="Ask about scenarios, results or documents" aria-label="Your question" />
+             placeholder="Ask, or describe a feature — attach screenshots too" aria-label="Your question" />
       <button id="botSend" class="bot-send" type="submit" aria-label="Send">
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>

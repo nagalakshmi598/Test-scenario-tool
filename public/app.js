@@ -1809,6 +1809,7 @@ const bot = {
   busy: false,
   history: [],          // {role, content} pairs sent back for follow-up questions
   position: null,       // where the user dragged the panel to
+  files: [],            // attachments waiting to go with the next message
   greeted: false,
 };
 
@@ -1829,6 +1830,85 @@ function botBubble(role, text, extraClass = '') {
   el('botLog').scrollTop = el('botLog').scrollHeight;
   return row;
 }
+
+/* ---------------- attachments ----------------
+   A screenshot of the bug, or a sheet of scenarios, says more than a
+   paragraph describing it. Files ride along with one message and are not
+   stored — write-ups that need keeping go through the Documents page. */
+
+const MAX_CHAT_FILES = 5;
+
+function renderBotFiles() {
+  const tray = el('botFiles-tray');
+  tray.innerHTML = '';
+  tray.hidden = !bot.files.length;
+
+  bot.files.forEach((file, idx) => {
+    const chip = document.createElement('span');
+    chip.className = 'bot-file';
+
+    const name = document.createElement('span');
+    name.className = 'bot-file-name';
+    name.textContent = file.name;
+    name.title = `${file.name} — ${Math.max(1, Math.round(file.size / 1024))} KB`;
+    chip.appendChild(name);
+
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'bot-file-x';
+    drop.setAttribute('aria-label', `Remove ${file.name}`);
+    drop.textContent = '×';
+    drop.addEventListener('click', () => {
+      bot.files.splice(idx, 1);
+      renderBotFiles();
+    });
+    chip.appendChild(drop);
+
+    tray.appendChild(chip);
+  });
+}
+
+function addBotFiles(list) {
+  const incoming = Array.from(list || []);
+  if (!incoming.length) return;
+
+  const room = MAX_CHAT_FILES - bot.files.length;
+  if (room <= 0) {
+    toast(`The assistant takes ${MAX_CHAT_FILES} files at a time.`, true);
+    return;
+  }
+
+  bot.files = bot.files.concat(incoming.slice(0, room));
+  if (incoming.length > room) toast(`Only the first ${room} were attached.`, true);
+  renderBotFiles();
+}
+
+el('botAttach').addEventListener('click', () => el('botFiles').click());
+el('botFiles').addEventListener('change', (event) => {
+  addBotFiles(event.target.files);
+  event.target.value = '';
+});
+
+/* dropping onto the panel, and pasting a screenshot straight in */
+el('botPanel').addEventListener('dragover', (event) => {
+  event.preventDefault();
+  el('botPanel').classList.add('is-dropping');
+});
+el('botPanel').addEventListener('dragleave', (event) => {
+  if (event.target === el('botPanel')) el('botPanel').classList.remove('is-dropping');
+});
+el('botPanel').addEventListener('drop', (event) => {
+  event.preventDefault();
+  el('botPanel').classList.remove('is-dropping');
+  addBotFiles(event.dataTransfer.files);
+});
+el('botInput').addEventListener('paste', (event) => {
+  const pasted = Array.from(event.clipboardData.files || []);
+  if (pasted.length) {
+    event.preventDefault();
+    addBotFiles(pasted);
+  }
+});
 
 /** CSV of the drafted rows, in the same shape the upload dialog accepts. */
 function draftToCsv(draft) {
@@ -1980,18 +2060,31 @@ async function askBot(question) {
   bot.busy = true;
   el('botSend').disabled = true;
   el('botInput').value = '';
-  botBubble('user', text);
+
+  const sent = bot.files.slice();
+  bot.files = [];
+  renderBotFiles();
+
+  botBubble('user', sent.length ? `${text}\n\n${sent.map((f) => `📎 ${f.name}`).join('\n')}` : text);
 
   const thinking = botBubble('bot', 'Looking through the tool\u2026', 'is-thinking');
 
   try {
-    const result = await api('/api/assistant', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: text, history: bot.history, currentProduct: state.product || null }),
-    });
+    const form = new FormData();
+    form.append('question', text);
+    form.append('history', JSON.stringify(bot.history));
+    if (state.product) form.append('currentProduct', state.product);
+    sent.forEach((file) => form.append('files', file, file.name));
+
+    // no Content-Type header: the browser sets the multipart boundary
+    const result = await api('/api/assistant', { method: 'POST', body: form });
 
     thinking.remove();
+
+    (result.attachments || [])
+      .filter((a) => a.kind === 'skipped')
+      .forEach((a) => botBubble('bot', `📎 ${a.name} — ${a.note}`, 'is-error'));
+
     botBubble('bot', result.answer);
 
     if (result.draft && result.draft.scenarios.length) {
