@@ -1876,7 +1876,8 @@ async function saveDraft(draft, button) {
     });
 
     const where = productLabel(draft.product);
-    botBubble('bot', `${plural(result.added, 'scenario')} ${result.appended ? 'added to' : 'saved as'} "${result.enhancement.name}" under ${where}.`);
+    botBubble('bot', `${plural(result.added, 'scenario')} ${result.appended ? 'added to' : 'saved as'} "${result.enhancement.name}" under ${where} Migration Scenarios.`);
+    botOpenLink(result.enhancement.id, result.enhancement.name);
 
     await loadProducts();
     if (state.view === 'enhancements' && state.product === draft.product) await openProduct(draft.product);
@@ -1889,6 +1890,26 @@ async function saveDraft(draft, button) {
   }
 }
 
+/** A link in the chat through to the scenarios that were just saved. */
+function botOpenLink(id, name) {
+  const row = document.createElement('div');
+  row.className = 'bot-actions';
+
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'bot-action is-primary';
+  open.textContent = 'Open it';
+  open.title = name;
+  open.addEventListener('click', () => {
+    toggleBot(false);
+    openEnhancement(id);
+  });
+  row.appendChild(open);
+
+  el('botLog').appendChild(row);
+  el('botLog').scrollTop = el('botLog').scrollHeight;
+}
+
 /** The row of actions under a drafted answer. */
 function botDraftActions(draft) {
   const wrap = document.createElement('div');
@@ -1897,9 +1918,8 @@ function botDraftActions(draft) {
   const save = document.createElement('button');
   save.type = 'button';
   save.className = 'bot-action is-primary';
-  save.textContent = `Save to ${productLabel(draft.product)}`;
-  save.title = `Create "${draft.name}" with ${plural(draft.scenarios.length, 'scenario')}`;
-  save.addEventListener('click', () => saveDraft(draft, save));
+  save.textContent = `Saving to ${productLabel(draft.product)}…`;
+  save.disabled = true;
   wrap.appendChild(save);
 
   const csv = document.createElement('button');
@@ -1975,9 +1995,8 @@ async function askBot(question) {
     botBubble('bot', result.answer);
 
     if (result.draft && result.draft.scenarios.length) {
-      const saveButton = botDraftActions(result.draft);
-      // they asked for it to go in, so do it rather than make them click
-      if (result.draft.save) await saveDraft(result.draft, saveButton);
+      // drafted scenarios belong in their product's page; put them there
+      await saveDraft(result.draft, botDraftActions(result.draft));
     }
 
     bot.history.push({ role: 'user', content: text });

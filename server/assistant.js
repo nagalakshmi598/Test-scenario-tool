@@ -56,6 +56,23 @@ Teams, Google Chat, Google Drive, SharePoint and similar clouds.
 The user describes a feature and wants test scenarios for it. Draft them.
 
 Shape of the answer:
+- Label every scenario with what kind of check it is. Immediately after the
+  number, write exactly one of these three words in square brackets —
+  [Positive], [Negative] or [Edge]. Use those words, not synonyms, and not
+  [Pass] or [Fail]. A line looks like this:
+
+      7. [Negative] Verify that migration is refused when the destination
+         Team mapping is missing, and the reason is shown.
+
+    Positive — the feature behaving as intended.
+    Negative — it is used wrongly, a limit is exceeded, a mapping is missing,
+               input is invalid, permission is absent; the tool must refuse
+               cleanly rather than half-work.
+    Edge     — the boundary and the unusual but legal: exactly at a limit,
+               empty, maximum length, a single item, duplicates, re-running,
+               two at once, interrupted partway.
+- All three kinds must appear. Roughly a third positive; the rest split
+  between negative and edge.
 - Group the scenarios into short sections, one per dimension of the feature.
   Put the section name on its own line, then its scenarios under it.
   A section name is a few words, optionally with the limit in brackets —
@@ -911,6 +928,19 @@ async function answerLocally(question) {
    means the chat can hand them straight to the store, with the section headings
    kept as a column so the grouping survives. */
 
+/* Models do not all reach for the same word. Read whichever they picked as
+   one of the three kinds, and ignore a bracketed aside that is none of them. */
+const LABELS = {
+  Positive: ['positive', 'pos', 'pass', 'happy', 'happy path', 'valid', 'success'],
+  Negative: ['negative', 'neg', 'fail', 'failure', 'invalid', 'error', 'unhappy'],
+  Edge: ['edge', 'edge case', 'boundary', 'limit', 'corner', 'corner case'],
+};
+
+function labelOf(word) {
+  const w = String(word).trim().toLowerCase();
+  return Object.keys(LABELS).find((kind) => LABELS[kind].includes(w)) || '';
+}
+
 /** The numbered "Verify that …" lines, with the section each one sat under. */
 function parseDraft(answer) {
   const rows = [];
@@ -922,14 +952,26 @@ function parseDraft(answer) {
 
     const numbered = line.match(/^(\d+)[.)]\s+(.*)$/);
     if (numbered) {
-      const text = numbered[2].trim();
-      if (text.length > 10) rows.push({ scenario: text, section });
+      let text = numbered[2].trim();
+
+      // "[Negative] Verify that …" — the label becomes its own column
+      let type = '';
+      const labelled = text.match(/^[\[(]\s*([a-z \-]{3,20})\s*[\])]\s*[:\-]?\s*(.*)$/i);
+      if (labelled) {
+        const kind = labelOf(labelled[1]);
+        if (kind) {
+          type = kind;
+          text = labelled[2].trim();
+        }
+      }
+
+      if (text.length > 10) rows.push({ scenario: text, section, type });
       return;
     }
 
     // a short line that is not a sentence is a heading for what follows
     if (line.length <= 60 && !/[.!?]$/.test(line) && !/^[-*\u2022]/.test(line)) {
-      section = line.replace(/[:\s]+$/, '');
+      section = line.replace(/^[\[(]?\s*(?:positive|negative|edge)\s*[\])]?\s*[:\-]?\s*/i, '').replace(/[:\s]+$/, '');
     }
   });
 

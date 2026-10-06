@@ -464,16 +464,23 @@ app.post('/api/assistant/scenarios', wrap(async (req, res) => {
   const rows = scenarios
     .map((row) => (typeof row === 'string' ? { scenario: row } : row || {}))
     .filter((row) => typeof row.scenario === 'string' && row.scenario.trim())
-    .map((row) => ({
-      scenario: row.scenario.trim().slice(0, 2000),
-      sourceSno: '',
-      extra: row.section ? { Section: String(row.section).slice(0, 120) } : {},
-      addedByAssistant: true,
-    }));
+    .map((row) => {
+      const extra = {};
+      if (row.type) extra.Type = String(row.type).slice(0, 20);
+      if (row.section) extra.Section = String(row.section).slice(0, 120);
+      return {
+        scenario: row.scenario.trim().slice(0, 2000),
+        sourceSno: '',
+        extra,
+        addedByAssistant: true,
+      };
+    });
 
   if (!rows.length) return res.status(400).json({ error: 'There are no scenarios to save.' });
 
-  const extraColumns = rows.some((r) => r.extra.Section) ? ['Section'] : [];
+  const extraColumns = [];
+  if (rows.some((r) => r.extra.Type)) extraColumns.push('Type');
+  if (rows.some((r) => r.extra.Section)) extraColumns.push('Section');
   const existing = await store.findByName(product, name);
 
   if (existing) {
