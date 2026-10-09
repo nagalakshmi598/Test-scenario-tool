@@ -188,21 +188,29 @@ async function addScenario(id, { scenario, extra }) {
 }
 
 /** Cache the generated test cases on the scenario row so they survive a restart. */
+/**
+ * Write the test cases onto one scenario, and only that scenario.
+ *
+ * Reading the whole array, changing one entry and writing it all back loses
+ * writes the moment two of these overlap — and filling in a set of scenarios
+ * runs several at once, so they always overlap. The positional update touches
+ * the one row, leaving the rest of the array exactly as it is on the server.
+ */
 async function setTestCases(id, sno, { testCases, model, provider, generatedAt }) {
-  const enhancement = await getEnhancement(id);
-  if (!enhancement) return null;
+  const row = await (await enhancements()).findOneAndUpdate(
+    { _id: id, 'scenarios.sno': Number(sno) },
+    {
+      $set: {
+        'scenarios.$.testCases': testCases,
+        'scenarios.$.testCasesMeta': { model, provider, generatedAt },
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    { returnDocument: 'after' }
+  );
 
-  const scenario = enhancement.scenarios.find((s) => Number(s.sno) === Number(sno));
-  if (!scenario) return null;
-
-  const rows = enhancement.scenarios.map((s) => (
-    Number(s.sno) === Number(sno)
-      ? { ...s, testCases, testCasesMeta: { model, provider, generatedAt } }
-      : s
-  ));
-
-  await saveScenarios(id, rows);
-  return rows.find((s) => Number(s.sno) === Number(sno));
+  if (!row) return null;
+  return (fromDoc(row).scenarios || []).find((s) => Number(s.sno) === Number(sno)) || null;
 }
 
 /** Set the run result on one scenario row. */

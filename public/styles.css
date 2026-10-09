@@ -755,6 +755,34 @@ body {
 
 .bot-panel.is-dropping { outline: 2px dashed var(--cf-color-primary); outline-offset: -4px; }
 
+/* a run filling in test cases across a whole upload */
+.tc-progress {
+  display: flex; align-items: center; gap: 14px;
+  margin: 0 0 14px; padding: 12px 16px;
+  background: var(--blue-tint); border: 1px solid var(--cf-color-primary);
+  border-radius: var(--cf-radius-md);
+}
+.tc-progress.is-failed { background: #fdf0f0; border-color: #c62828; }
+
+.tc-progress-bar {
+  flex: 1 1 auto; height: 7px; min-width: 120px;
+  background: var(--white); border-radius: var(--cf-radius-pill); overflow: hidden;
+}
+.tc-progress-bar span {
+  display: block; height: 100%; width: 0;
+  background: var(--cf-color-primary); border-radius: inherit;
+  transition: width .3s var(--ease);
+}
+.tc-progress.is-failed .tc-progress-bar span { background: #c62828; }
+
+.tc-progress-text {
+  flex: 0 1 auto; margin: 0;
+  font: 600 13px/1.4 inherit; color: var(--cf-color-primary);
+}
+.tc-progress.is-failed .tc-progress-text { color: #c62828; }
+
+.btn-sm { padding: 5px 12px; font-size: 12.5px; }
+
 /* ---------- empty state ---------- */
 .empty {
   border: 1px dashed var(--border-strong); background: var(--white); border-radius: var(--radius);

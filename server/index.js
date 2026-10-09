@@ -11,6 +11,7 @@ const { extractScenarios } = require('./parse');
 const { askAssistant } = require('./assistant');
 const attachments = require('./attachments');
 const { generateTestCases, hasApiKey, activeProvider, keyProblem } = require('./testcases');
+const testCaseJobs = require('./testcasejobs');
 const {
   ALLOWED_EXT: DOC_EXT,
   ingestDocument,
@@ -253,6 +254,32 @@ app.post('/api/enhancements/:id/scenarios/:sno/testcases', wrap(async (req, res)
     meta: { model: generated.model, provider: generated.provider, generatedAt: generated.generatedAt },
     cached: false,
   });
+}));
+
+/* ---------------- test cases for a whole enhancement ----------------
+   The same work as the button on each row, done for every scenario that is
+   still empty, so a set of two hundred is one request rather than two
+   hundred clicks. */
+
+app.post('/api/enhancements/:id/testcases', wrap(async (req, res) => {
+  const regenerate = Boolean(req.body && req.body.regenerate);
+  const job = await testCaseJobs.start(req.params.id, { regenerate });
+  res.status(202).json({ job });
+}));
+
+app.get('/api/enhancements/:id/testcases', wrap(async (req, res) => {
+  const job = testCaseJobs.get(req.params.id);
+  if (!job) return res.json({ job: null });
+  res.json({ job });
+}));
+
+app.delete('/api/enhancements/:id/testcases', wrap(async (req, res) => {
+  res.json({ job: testCaseJobs.cancel(req.params.id) });
+}));
+
+/** Everything in the tool still missing test cases. */
+app.get('/api/testcases/outstanding', wrap(async (req, res) => {
+  res.json({ enhancements: await testCaseJobs.outstanding() });
 }));
 
 /* ---------------- enhancement documents ---------------- */

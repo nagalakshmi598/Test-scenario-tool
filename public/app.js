@@ -15,6 +15,8 @@ const state = {
   enhFilter: '',
   scenarioFilter: '',
   openTestCases: new Set(),   // scenario serial numbers whose test-case panel is open
+  tcJob: null,                // the test-case run in progress, as the server reports it
+  tcPoll: null,               // its polling timer
   documents: [],              // enhancement write-ups
   docFilter: '',
   enhancementDocs: [],        // documents linked to the open enhancement
@@ -298,6 +300,7 @@ function fillProductSelect() {
 
 async function openProduct(key, { silent = false, push = true } = {}) {
   if (push) pushRoute({ view: 'enhancements', product: key });
+  stopTestCasePolling();
   state.product = key;
   state.enhancement = null;
   state.view = 'enhancements';
@@ -372,6 +375,15 @@ function renderEnhancements() {
 }
 
 /* ---------------- scenario table ---------------- */
+
+/** Stop following a run when the page moves on. */
+function stopTestCasePolling() {
+  if (state.tcPoll) clearTimeout(state.tcPoll);
+  state.tcPoll = null;
+  state.tcJob = null;
+  const strip = document.getElementById('tcProgress');
+  if (strip) strip.hidden = true;
+}
 
 async function openEnhancement(id, { push = true } = {}) {
   try {
@@ -596,6 +608,13 @@ function buildActionMenu() {
     renderScenarios();
   });
   collapse.disabled = !state.openTestCases.size;
+
+  const missing = enh.scenarios.filter((s) => !(s.testCases && s.testCases.length)).length;
+  const fill = item(
+    missing ? `Generate test cases for ${plural(missing, 'scenario')}` : 'All scenarios have test cases',
+    () => startTestCaseRun(enh.id, false)
+  );
+  fill.disabled = !missing || Boolean(state.tcJob && state.tcJob.state === 'running');
 
   const sep = document.createElement('div');
   sep.className = 'bulk-sep';
@@ -858,6 +877,110 @@ function renderTestCaseTable(cases) {
   return wrap;
 }
 
+/* ---------------- test cases for every scenario ----------------
+   The per-row button generates one set and waits. Filling a whole upload that
+   way is one click per scenario, so the same work runs as a job on the server
+   and the page follows along. */
+
+function renderTestCaseProgress() {
+  const strip = el('tcProgress');
+  const job = state.tcJob;
+
+  if (!job || (job.state !== 'running' && job.state !== 'failed')) {
+    strip.hidden = true;
+    return;
+  }
+
+  const done = job.done + job.failed + job.skipped;
+  const pct = job.total ? Math.round((done / job.total) * 100) : 100;
+
+  strip.hidden = false;
+  strip.classList.toggle('is-failed', job.state === 'failed');
+  el('tcProgressFill').style.width = `${pct}%`;
+  el('tcProgressStop').hidden = job.state !== 'running';
+
+  if (job.state === 'failed') {
+    el('tcProgressText').textContent = job.error || 'Generation stopped.';
+    return;
+  }
+
+  const trailer = job.failed ? ` · ${job.failed} could not be generated` : '';
+  el('tcProgressText').textContent =
+    `Writing test cases — ${job.done} of ${job.total} done${trailer}`;
+}
+
+async function pollTestCaseRun(id) {
+  if (state.tcPoll) clearTimeout(state.tcPoll);
+
+  let result;
+  try {
+    result = await api(`/api/enhancements/${id}/testcases`);
+  } catch (err) {
+    state.tcJob = { state: 'failed', error: err.message, total: 0, done: 0, failed: 0, skipped: 0 };
+    renderTestCaseProgress();
+    return;
+  }
+
+  state.tcJob = result.job;
+  renderTestCaseProgress();
+  if (!result.job) return;
+
+  // the rows gain their test cases as the job goes, so keep the table current
+  if (state.view === 'scenarios' && state.enhancement && state.enhancement.id === id) {
+    const fresh = await api(`/api/enhancements/${id}`);
+    state.enhancement = fresh.enhancement;
+    renderScenarios();
+    renderTestCaseProgress();
+  }
+
+  if (result.job.state === 'running') {
+    state.tcPoll = setTimeout(() => pollTestCaseRun(id), 2500);
+    return;
+  }
+
+  if (result.job.state === 'done') {
+    const trailer = result.job.failed ? `, ${result.job.failed} could not be generated` : '';
+    toast(`Test cases written for ${plural(result.job.done, 'scenario')}${trailer}.`);
+    await loadProducts();
+  }
+}
+
+/** Start filling in the test cases for one enhancement. */
+async function startTestCaseRun(id, regenerate) {
+  try {
+    const started = await api(`/api/enhancements/${id}/testcases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ regenerate: Boolean(regenerate) }),
+    });
+
+    state.tcJob = started.job;
+    renderTestCaseProgress();
+
+    if (started.job && started.job.total === 0) {
+      toast('Every scenario already has test cases.');
+      return;
+    }
+    pollTestCaseRun(id);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+el('tcProgressStop').addEventListener('click', async () => {
+  const id = state.enhancement && state.enhancement.id;
+  if (!id) return;
+  try {
+    await api(`/api/enhancements/${id}/testcases`, { method: 'DELETE' });
+    if (state.tcPoll) clearTimeout(state.tcPoll);
+    state.tcJob = null;
+    renderTestCaseProgress();
+    toast('Stopped. What was written is kept.');
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
 async function runTestCases(sno, regenerate, button, body) {
   const enh = state.enhancement;
   if (!enh) return;
@@ -980,6 +1103,7 @@ function renderCrumbs() {
 
 function resetToDashboard({ push = true } = {}) {
   if (push) pushRoute({ view: 'dashboard' });
+  stopTestCasePolling();
   state.product = null;
   state.enhancement = null;
   state.enhancements = [];
@@ -1177,6 +1301,7 @@ function hideAllViews() {
 async function openDocuments({ expand, product, push = true } = {}) {
   if (push) pushRoute({ view: 'documents', expand: expand || null, product: product || null });
   if (product) state.docsNavOpen = true;
+  stopTestCasePolling();
   state.product = null;
   state.enhancement = null;
   state.view = 'documents';
@@ -1968,6 +2093,11 @@ async function saveDraft(draft, button) {
     const where = productLabel(draft.product);
     botBubble('bot', `${plural(result.added, 'scenario')} ${result.appended ? 'added to' : 'saved as'} "${result.enhancement.name}" under ${where} Migration Scenarios.`);
     botOpenLink(result.enhancement.id, result.enhancement.name);
+
+    if (result.added) {
+      botBubble('bot', 'Writing the detailed test cases for them now — they will fill in on the page.');
+      startTestCaseRun(result.enhancement.id, false);
+    }
 
     await loadProducts();
     if (state.view === 'enhancements' && state.product === draft.product) await openProduct(draft.product);
